@@ -25,6 +25,7 @@ class GmailConfig(BaseModel):
 
     credentials_file: str = "~/.mailfiler/credentials.json"
     token_file: str = "~/.mailfiler/token.json"
+    user_email: str = ""
     poll_interval_minutes: int = Field(default=5, gt=0)
     max_emails_per_run: int = Field(default=50, gt=0)
 

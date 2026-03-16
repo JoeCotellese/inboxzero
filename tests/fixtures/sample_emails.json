@@ -1,0 +1,141 @@
+[
+  {
+    "name": "newsletter_with_unsub",
+    "gmail_message_id": "msg_newsletter",
+    "gmail_thread_id": "thread_001",
+    "from_email": "digest@techstars.com",
+    "from_domain": "techstars.com",
+    "from_display_name": "Techstars Weekly",
+    "to_email": "joe@gmail.com",
+    "subject": "Techstars Weekly Digest",
+    "snippet": "This week in startups...",
+    "headers": {
+      "List-Unsubscribe": "<mailto:unsub@techstars.com>",
+      "Precedence": "bulk"
+    },
+    "received_at": "2026-03-16T09:00:00Z"
+  },
+  {
+    "name": "personal_email",
+    "gmail_message_id": "msg_personal",
+    "gmail_thread_id": "thread_002",
+    "from_email": "trish@example.com",
+    "from_domain": "example.com",
+    "from_display_name": "Trish",
+    "to_email": "joe@gmail.com",
+    "subject": "Dinner tonight?",
+    "snippet": "Hey, are you free for dinner?",
+    "headers": {
+      "DKIM-Signature": "v=1; a=rsa-sha256; d=example.com"
+    },
+    "received_at": "2026-03-16T09:05:00Z"
+  },
+  {
+    "name": "github_notification",
+    "gmail_message_id": "msg_github",
+    "gmail_thread_id": "thread_003",
+    "from_email": "notifications@github.com",
+    "from_domain": "github.com",
+    "from_display_name": "GitHub",
+    "to_email": "joe@gmail.com",
+    "subject": "[mailfiler] PR #42 merged",
+    "snippet": "Your pull request was merged",
+    "headers": {
+      "X-GitHub-Reason": "subscribed",
+      "X-GitHub-Sender": "dependabot",
+      "List-Unsubscribe": "<https://github.com/notifications/unsubscribe>"
+    },
+    "received_at": "2026-03-16T09:10:00Z"
+  },
+  {
+    "name": "noreply_automated",
+    "gmail_message_id": "msg_noreply",
+    "gmail_thread_id": "thread_004",
+    "from_email": "noreply@service.com",
+    "from_domain": "service.com",
+    "from_display_name": null,
+    "to_email": "joe@gmail.com",
+    "subject": "Your account statement",
+    "snippet": "Your monthly statement is ready",
+    "headers": {
+      "Auto-Submitted": "auto-generated",
+      "Return-Path": "<>"
+    },
+    "received_at": "2026-03-16T09:15:00Z"
+  },
+  {
+    "name": "marketing_esp",
+    "gmail_message_id": "msg_marketing",
+    "gmail_thread_id": "thread_005",
+    "from_email": "promo@store.com",
+    "from_domain": "store.com",
+    "from_display_name": "Big Store",
+    "to_email": "joe@gmail.com",
+    "subject": "50% off everything!",
+    "snippet": "Shop our biggest sale ever",
+    "headers": {
+      "X-Mailer": "MailChimp Mailer",
+      "X-Campaign-ID": "camp_123",
+      "List-Unsubscribe": "<mailto:unsub@store.com>"
+    },
+    "received_at": "2026-03-16T09:20:00Z"
+  },
+  {
+    "name": "pagerduty_alert",
+    "gmail_message_id": "msg_pagerduty",
+    "gmail_thread_id": "thread_006",
+    "from_email": "alerts@pagerduty.com",
+    "from_domain": "pagerduty.com",
+    "from_display_name": "PagerDuty",
+    "to_email": "joe@gmail.com",
+    "subject": "ALERT: Production down",
+    "snippet": "CPU usage at 99%",
+    "headers": {
+      "X-PagerDuty-Integration": "email"
+    },
+    "received_at": "2026-03-16T09:25:00Z"
+  },
+  {
+    "name": "slack_notification",
+    "gmail_message_id": "msg_slack",
+    "gmail_thread_id": "thread_007",
+    "from_email": "notification@slack.com",
+    "from_domain": "slack.com",
+    "from_display_name": "Slack",
+    "to_email": "joe@gmail.com",
+    "subject": "New message in #general",
+    "snippet": "Bob: Hey everyone",
+    "headers": {
+      "X-Slack-Notification": "true"
+    },
+    "received_at": "2026-03-16T09:30:00Z"
+  },
+  {
+    "name": "jira_notification",
+    "gmail_message_id": "msg_jira",
+    "gmail_thread_id": "thread_008",
+    "from_email": "jira@company.atlassian.net",
+    "from_domain": "company.atlassian.net",
+    "from_display_name": "JIRA",
+    "to_email": "joe@gmail.com",
+    "subject": "[PROJ-123] Bug report updated",
+    "snippet": "Status changed to In Progress",
+    "headers": {
+      "X-JIRA-FingerPrint": "abc123"
+    },
+    "received_at": "2026-03-16T09:35:00Z"
+  },
+  {
+    "name": "vip_sender",
+    "gmail_message_id": "msg_vip",
+    "gmail_thread_id": "thread_009",
+    "from_email": "boss@wavely.com",
+    "from_domain": "wavely.com",
+    "from_display_name": "The Boss",
+    "to_email": "joe@gmail.com",
+    "subject": "Q1 Review",
+    "snippet": "Let's discuss the quarterly numbers",
+    "headers": {},
+    "received_at": "2026-03-16T09:40:00Z"
+  }
+]

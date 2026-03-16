@@ -1,6 +1,7 @@
 [gmail]
 credentials_file = "~/.mailfiler/credentials.json"
 token_file = "~/.mailfiler/token.json"
+user_email = ""  # Your Gmail address, used for direct-to scoring
 poll_interval_minutes = 5
 max_emails_per_run = 50
 
