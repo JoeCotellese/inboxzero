@@ -40,6 +40,52 @@ def cli(ctx: click.Context, config_path: str) -> None:
 
 @cli.command()
 @click.pass_context
+def start(ctx: click.Context) -> None:
+    """Start the polling daemon in the background."""
+    config: AppConfig = ctx.obj["config"]
+    pid_path = Path(config.daemon.pid_file)
+
+    from mailfiler.daemon import PIDFile
+
+    pid_file = PIDFile(pid_path)
+    if pid_file.read() is not None:
+        click.echo("Daemon appears to already be running. Use 'mailfiler stop' first.")
+        return
+
+    click.echo(
+        f"Daemon start is a placeholder — use 'mailfiler run' for foreground mode.\n"
+        f"Run mode: {config.daemon.run_mode}"
+    )
+
+
+@cli.command()
+@click.pass_context
+def stop(ctx: click.Context) -> None:
+    """Stop the running daemon."""
+    config: AppConfig = ctx.obj["config"]
+    pid_path = Path(config.daemon.pid_file)
+
+    from mailfiler.daemon import stop_daemon
+
+    stopped = stop_daemon(pid_path)
+    if stopped:
+        click.echo("Daemon stopped.")
+    else:
+        click.echo("Daemon is not running.")
+
+
+@cli.command()
+@click.pass_context
+def run(ctx: click.Context) -> None:
+    """Run one processing pass in the foreground (observe mode)."""
+    click.echo(
+        "Single-pass run requires Gmail credentials.\n"
+        "Configure credentials_file in config.toml to enable."
+    )
+
+
+@cli.command()
+@click.pass_context
 def status(ctx: click.Context) -> None:
     """Show daemon status and recent stats."""
     config: AppConfig = ctx.obj["config"]
