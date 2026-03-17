@@ -14,4 +14,5 @@ build/
 credentials.json
 token.json
 .env
+config.toml
 uv.lock
