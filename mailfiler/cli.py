@@ -35,7 +35,7 @@ def cli(ctx: click.Context, config_path: str) -> None:
     ctx.ensure_object(dict)
     config = load_config(Path(config_path))
     ctx.obj["config"] = config
-    ctx.obj["conn"] = initialize_db(Path(config.database.path))
+    ctx.obj["conn"] = initialize_db(Path(config.database.path).expanduser())
 
 
 @cli.command()
@@ -43,7 +43,7 @@ def cli(ctx: click.Context, config_path: str) -> None:
 def start(ctx: click.Context) -> None:
     """Start the polling daemon in the background."""
     config: AppConfig = ctx.obj["config"]
-    pid_path = Path(config.daemon.pid_file)
+    pid_path = Path(config.daemon.pid_file).expanduser()
 
     from mailfiler.daemon import PIDFile
 
@@ -63,7 +63,7 @@ def start(ctx: click.Context) -> None:
 def stop(ctx: click.Context) -> None:
     """Stop the running daemon."""
     config: AppConfig = ctx.obj["config"]
-    pid_path = Path(config.daemon.pid_file)
+    pid_path = Path(config.daemon.pid_file).expanduser()
 
     from mailfiler.daemon import stop_daemon
 
@@ -77,11 +77,49 @@ def stop(ctx: click.Context) -> None:
 @cli.command()
 @click.pass_context
 def run(ctx: click.Context) -> None:
-    """Run one processing pass in the foreground (observe mode)."""
-    click.echo(
-        "Single-pass run requires Gmail credentials.\n"
-        "Configure credentials_file in config.toml to enable."
+    """Run one processing pass in the foreground."""
+    config: AppConfig = ctx.obj["config"]
+    conn: sqlite3.Connection = ctx.obj["conn"]
+
+    from mailfiler.mail.gmail_auth import get_gmail_service
+    from mailfiler.mail.gmail_client import GmailMailClient
+    from mailfiler.pipeline.cache import CacheLayer
+    from mailfiler.pipeline.heuristics import HeuristicsLayer
+    from mailfiler.pipeline.llm import AnthropicLLMProvider, LLMLayer
+    from mailfiler.pipeline.processor import PipelineProcessor
+
+    creds_path = Path(config.gmail.credentials_file).expanduser()
+    token_path = Path(config.gmail.token_file).expanduser()
+
+    service = get_gmail_service(creds_path, token_path)
+    mail_client = GmailMailClient(service, labels_prefix=config.labels.prefix)
+
+    processor = PipelineProcessor(
+        mail_client=mail_client,
+        cache_layer=CacheLayer(),
+        heuristics_layer=HeuristicsLayer(),
+        llm_layer=LLMLayer(
+            provider=AnthropicLLMProvider(
+                model=config.llm.model,
+                max_tokens=config.llm.max_tokens,
+                timeout_seconds=config.llm.timeout_seconds,
+            ),
+            llm_threshold=config.rules.llm_threshold,
+        ),
+        conn=conn,
+        run_mode=config.daemon.run_mode,
+        config=config,
     )
+
+    click.echo(f"Fetching up to {config.gmail.max_emails_per_run} unread emails...")
+    emails = mail_client.fetch_unread(max_results=config.gmail.max_emails_per_run)
+    click.echo(f"Found {len(emails)} unread emails.")
+
+    if emails:
+        processed = processor.process_batch(emails)
+        click.echo(f"Processed {processed}/{len(emails)} emails (mode: {config.daemon.run_mode})")
+    else:
+        click.echo("Inbox zero! Nothing to process.")
 
 
 @cli.command()
@@ -89,7 +127,7 @@ def run(ctx: click.Context) -> None:
 def status(ctx: click.Context) -> None:
     """Show daemon status and recent stats."""
     config: AppConfig = ctx.obj["config"]
-    pid_path = Path(config.daemon.pid_file)
+    pid_path = Path(config.daemon.pid_file).expanduser()
 
     if pid_path.exists():
         pid = pid_path.read_text().strip()

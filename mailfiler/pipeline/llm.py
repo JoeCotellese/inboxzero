@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from typing import TYPE_CHECKING, Protocol
+
+import anthropic
 
 from mailfiler.models import Action, LLMClassification
 
@@ -91,6 +95,82 @@ def build_prompt(email: EmailMessage) -> str:
         filtered_headers="; ".join(header_parts) if header_parts else "none",
         snippet=email.snippet or "",
     )
+
+
+_MARKDOWN_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?\s*```", re.DOTALL)
+
+
+class AnthropicLLMProvider:
+    """LLM provider using the Anthropic SDK.
+
+    Reads ANTHROPIC_API_KEY from the environment (standard SDK behavior).
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str = "claude-haiku-4-5",
+        max_tokens: int = 500,
+        timeout_seconds: int = 10,
+    ) -> None:
+        self._model = model
+        self._max_tokens = max_tokens
+        self._client = anthropic.Anthropic(timeout=float(timeout_seconds))
+
+    def classify(self, email: EmailMessage) -> LLMClassification:
+        """Classify an email via the Anthropic API."""
+        prompt = build_prompt(email)
+
+        response = self._client.messages.create(
+            model=self._model,
+            max_tokens=self._max_tokens,
+            system=_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        raw_text = response.content[0].text
+        return _parse_llm_response(raw_text)
+
+
+def _parse_llm_response(raw_text: str) -> LLMClassification:
+    """Parse raw LLM text into an LLMClassification.
+
+    Handles markdown code fences and invalid action values.
+    Raises ValueError or KeyError on unparseable responses.
+    """
+    # Strip markdown fences if present
+    fence_match = _MARKDOWN_FENCE_RE.search(raw_text)
+    text = fence_match.group(1) if fence_match else raw_text
+
+    data = json.loads(text)
+
+    # Map action string to Action enum, defaulting to KEEP_INBOX for unknown values
+    try:
+        action = Action(data["action"])
+    except ValueError:
+        action = Action.KEEP_INBOX
+
+    return LLMClassification(
+        category=data["category"],
+        priority=data["priority"],
+        action=action,
+        label=data.get("label"),
+        confidence=data["confidence"],
+        reason=data.get("reason"),
+    )
+
+
+class StubLLMProvider:
+    """Placeholder LLM provider that always returns the safe default.
+
+    Use this when no real LLM API key is configured. The pipeline
+    falls back to keep_inbox for any email that reaches Layer 3.
+    """
+
+    def classify(self, email: EmailMessage) -> LLMClassification:
+        logger.info("StubLLMProvider: no LLM configured, defaulting to keep_inbox for %s",
+                     email.gmail_message_id)
+        return _SAFE_DEFAULT
 
 
 class LLMLayer:
