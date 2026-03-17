@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from mailfiler.config import RunMode
-from mailfiler.db.queries import upsert_processed_email
+from mailfiler.db.queries import get_processed_email_by_gmail_id, upsert_processed_email
 from mailfiler.models import Action, DecisionSource
 
 if TYPE_CHECKING:
@@ -60,13 +60,20 @@ class PipelineProcessor:
         self._run_mode = run_mode
         self._config = config
 
-    def process_email(self, email: EmailMessage) -> ProcessResult:
+    def process_email(self, email: EmailMessage) -> ProcessResult | None:
         """Process a single email through the 3-layer pipeline.
 
+        Returns None if the email was already processed (skip).
         Flow: cache → heuristics → LLM (if ambiguous)
         RunMode gates whether actions are executed or just logged.
         Audit log is written BEFORE action execution.
         """
+        # Skip emails we've already processed
+        existing = get_processed_email_by_gmail_id(self._conn, email.gmail_message_id)
+        if existing is not None:
+            logger.debug("Skipping already-processed email %s", email.gmail_message_id)
+            return None
+
         action: Action
         label: str | None
         confidence: float
@@ -150,6 +157,11 @@ class PipelineProcessor:
 
         # Execute the action
         self._mail.apply_action(email.gmail_message_id, action, label)
+
+        # Mark as read unless keeping in inbox (so important emails stay unread)
+        if action is not Action.KEEP_INBOX:
+            self._mail.apply_action(email.gmail_message_id, Action.MARK_READ)
+
         logger.info(
             "Executed %s on %s via %s",
             action, email.gmail_message_id, decision_source,
@@ -196,9 +208,13 @@ class PipelineProcessor:
         If on_result is provided, it's called with each ProcessResult for live display.
         """
         processed = 0
+        skipped = 0
         for email in emails:
             try:
                 result = self.process_email(email)
+                if result is None:
+                    skipped += 1
+                    continue
                 processed += 1
                 if on_result is not None:
                     on_result(result)
@@ -206,4 +222,6 @@ class PipelineProcessor:
                 logger.exception(
                     "Failed to process email %s", email.gmail_message_id
                 )
+        if skipped:
+            logger.info("Skipped %d already-processed emails", skipped)
         return processed

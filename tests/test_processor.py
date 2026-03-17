@@ -164,7 +164,10 @@ class TestCacheHitPath:
             cache_result=cache_result,
         )
         processor.process_email(_make_email())
-        assert len(mail_client.applied_actions) == 1
+        # 2 actions: archive + mark_read
+        assert len(mail_client.applied_actions) == 2
+        assert mail_client.applied_actions[0][1] is Action.ARCHIVE
+        assert mail_client.applied_actions[1][1] is Action.MARK_READ
         conn.close()
 
 
@@ -189,7 +192,8 @@ class TestHeuristicPath:
         record = get_processed_email_by_gmail_id(conn, "msg_001")
         assert record is not None
         assert record["decision_source"] == "heuristic"
-        assert len(mail_client.applied_actions) == 1
+        # 2 actions: archive + mark_read
+        assert len(mail_client.applied_actions) == 2
         conn.close()
 
 
@@ -263,8 +267,8 @@ class TestRunModeGating:
             heuristic_result=heuristic,
         )
         processor.process_email(_make_email())
-        # Should execute heuristic action
-        assert len(mail_client.applied_actions) == 1
+        # Should execute heuristic action + mark_read
+        assert len(mail_client.applied_actions) == 2
         conn.close()
 
     def test_heuristics_only_does_not_execute_llm(self, tmp_db_path: Path) -> None:

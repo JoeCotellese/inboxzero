@@ -128,8 +128,8 @@ class TestFullPipelineHeuristicsOnly:
             headers={"List-Unsubscribe": "<unsub>", "Precedence": "bulk"},
         )
         processor.process_email(newsletter)
-        # Should execute — heuristic confident enough
-        assert len(mail_client.applied_actions) == 1
+        # Should execute — heuristic confident enough (archive + mark_read)
+        assert len(mail_client.applied_actions) == 2
         conn.close()
 
 
@@ -180,7 +180,8 @@ class TestFullPipelineFullAuto:
         record = get_processed_email_by_gmail_id(conn, "msg_cached")
         assert record is not None
         assert record["decision_source"] == "cache:sender"
-        assert len(mail_client.applied_actions) == 1
+        # cache hit executes action + mark_read
+        assert len(mail_client.applied_actions) == 2
         conn.close()
 
 
