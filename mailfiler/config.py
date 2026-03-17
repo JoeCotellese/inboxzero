@@ -37,6 +37,7 @@ class LLMConfig(BaseModel):
     model: str = "claude-haiku-4-5"
     max_tokens: int = Field(default=500, gt=0)
     timeout_seconds: int = Field(default=10, gt=0)
+    base_url: str = ""
 
 
 class RulesConfig(BaseModel):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from mailfiler.config import RunMode
@@ -11,6 +12,7 @@ from mailfiler.models import Action, DecisionSource
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Callable
 
     from mailfiler.config import AppConfig
     from mailfiler.mail.protocol import MailClient
@@ -18,6 +20,20 @@ if TYPE_CHECKING:
     from mailfiler.pipeline.cache import CacheLayer
     from mailfiler.pipeline.heuristics import HeuristicsLayer
     from mailfiler.pipeline.llm import LLMLayer
+
+
+@dataclass(frozen=True)
+class ProcessResult:
+    """Result from processing a single email."""
+
+    from_email: str
+    subject: str | None
+    action: Action
+    label: str | None
+    confidence: float
+    decision_source: DecisionSource
+    executed: bool
+    llm_reason: str | None = None
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +60,7 @@ class PipelineProcessor:
         self._run_mode = run_mode
         self._config = config
 
-    def process_email(self, email: EmailMessage) -> None:
+    def process_email(self, email: EmailMessage) -> ProcessResult:
         """Process a single email through the 3-layer pipeline.
 
         Flow: cache → heuristics → LLM (if ambiguous)
@@ -97,7 +113,18 @@ class PipelineProcessor:
         )
 
         # Execute action based on RunMode
-        self._maybe_execute(email, action, label, decision_source)
+        executed = self._maybe_execute(email, action, label, decision_source)
+
+        return ProcessResult(
+            from_email=email.from_email,
+            subject=email.subject,
+            action=action,
+            label=label,
+            confidence=confidence,
+            decision_source=decision_source,
+            executed=executed,
+            llm_reason=llm_reason,
+        )
 
     def _maybe_execute(
         self,
@@ -105,21 +132,21 @@ class PipelineProcessor:
         action: Action,
         label: str | None,
         decision_source: DecisionSource,
-    ) -> None:
-        """Execute the action if RunMode permits."""
+    ) -> bool:
+        """Execute the action if RunMode permits. Returns True if executed."""
         if self._run_mode is RunMode.OBSERVE:
             logger.info(
                 "[observe] Would %s %s (%s)",
                 action, email.gmail_message_id, decision_source,
             )
-            return
+            return False
 
         if self._run_mode is RunMode.HEURISTICS_ONLY and decision_source is DecisionSource.LLM:
                 logger.info(
                     "[heuristics_only] LLM suggests %s for %s — not executing",
                     action, email.gmail_message_id,
                 )
-                return
+                return False
 
         # Execute the action
         self._mail.apply_action(email.gmail_message_id, action, label)
@@ -127,6 +154,7 @@ class PipelineProcessor:
             "Executed %s on %s via %s",
             action, email.gmail_message_id, decision_source,
         )
+        return True
 
     def _log_decision(
         self,
@@ -157,16 +185,23 @@ class PipelineProcessor:
             "was_overridden": False,
         })
 
-    def process_batch(self, emails: list[EmailMessage]) -> int:
+    def process_batch(
+        self,
+        emails: list[EmailMessage],
+        on_result: Callable[[ProcessResult], None] | None = None,
+    ) -> int:
         """Process a batch of emails. Returns the count of successfully processed.
 
         One email failing doesn't abort the batch.
+        If on_result is provided, it's called with each ProcessResult for live display.
         """
         processed = 0
         for email in emails:
             try:
-                self.process_email(email)
+                result = self.process_email(email)
                 processed += 1
+                if on_result is not None:
+                    on_result(result)
             except Exception:
                 logger.exception(
                     "Failed to process email %s", email.gmail_message_id

@@ -339,6 +339,75 @@ class TestLabelAssignment:
             assert result.label == "mailfiler/automated"
 
 
+    def test_receipt_label_by_subject(self) -> None:
+        layer = HeuristicsLayer()
+        email = _make_email(
+            subject="Your order confirmation #12345",
+            headers={"List-Unsubscribe": "<mailto:unsub>"},
+        )
+        result = layer.score(email, _default_config())
+        if result.action is Action.ARCHIVE:
+            assert result.label == "mailfiler/receipts"
+
+    def test_receipt_label_by_domain(self) -> None:
+        layer = HeuristicsLayer()
+        email = _make_email(
+            from_email="noreply@amazon.com",
+            from_domain="amazon.com",
+            subject="Something from Amazon",
+            headers={"Return-Path": "<>"},
+        )
+        result = layer.score(email, _default_config())
+        if result.action is Action.ARCHIVE:
+            assert result.label == "mailfiler/receipts"
+
+    def test_calendar_label_by_content_type(self) -> None:
+        layer = HeuristicsLayer()
+        email = _make_email(
+            subject="Team standup",
+            headers={
+                "Content-Type": "text/calendar; method=REQUEST",
+                "Return-Path": "<>",
+                "Auto-Submitted": "auto-generated",
+            },
+        )
+        result = layer.score(email, _default_config())
+        if result.action is Action.ARCHIVE:
+            assert result.label == "mailfiler/calendar"
+
+    def test_calendar_label_by_subject(self) -> None:
+        layer = HeuristicsLayer()
+        email = _make_email(
+            subject="Invitation: Project review @ Wed Mar 18",
+            headers={"Auto-Submitted": "auto-generated", "Return-Path": "<>"},
+        )
+        result = layer.score(email, _default_config())
+        if result.action is Action.ARCHIVE:
+            assert result.label == "mailfiler/calendar"
+
+    def test_security_label_by_subject(self) -> None:
+        layer = HeuristicsLayer()
+        email = _make_email(
+            subject="Your verification code is 123456",
+            headers={"Return-Path": "<>", "Auto-Submitted": "auto-generated"},
+        )
+        result = layer.score(email, _default_config())
+        if result.action is Action.ARCHIVE:
+            assert result.label == "mailfiler/security"
+
+    def test_security_label_by_domain(self) -> None:
+        layer = HeuristicsLayer()
+        email = _make_email(
+            from_email="noreply@accounts.google.com",
+            from_domain="accounts.google.com",
+            subject="Sign-in attempt blocked",
+            headers={"Return-Path": "<>"},
+        )
+        result = layer.score(email, _default_config())
+        if result.action is Action.ARCHIVE:
+            assert result.label == "mailfiler/security"
+
+
 class TestAppliedRulesAudit:
     """HeuristicResult should include which rules fired."""
 

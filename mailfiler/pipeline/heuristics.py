@@ -149,16 +149,64 @@ def email_headers_get(email: EmailMessage, key: str, default: str = "") -> str:
     return email.headers.get(key, default)
 
 
+# Patterns for receipt/transactional detection in subject lines
+_RECEIPT_SUBJECT = re.compile(
+    r"(receipt|order\s*confirm|invoice|payment|purchase|shipping|deliver)",
+    re.IGNORECASE,
+)
+
+# Patterns for security/auth detection in subject lines
+_SECURITY_SUBJECT = re.compile(
+    r"(verif(y|ication)|security\s*alert|sign[- ]?in|log[- ]?in|password|"
+    r"two[- ]?factor|2fa|one[- ]?time|otp|mfa|authenticat)",
+    re.IGNORECASE,
+)
+
+# Domains known to send receipts/transactional email
+_RECEIPT_DOMAINS = frozenset({
+    "amazon.com", "paypal.com", "stripe.com", "square.com",
+    "shopify.com", "venmo.com", "chase.com", "bankofamerica.com",
+    "capitalone.com", "amex.com", "discover.com",
+})
+
+# Domains known to send security/auth email
+_SECURITY_DOMAINS = frozenset({
+    "accounts.google.com", "account.apple.com", "login.microsoftonline.com",
+})
+
+
 def _detect_label(email: EmailMessage, config: AppConfig) -> str:
     """Determine the appropriate label based on header signals."""
     headers = email.headers
     prefix = config.labels.prefix
+    subject = (email.subject or "").lower()
+    from_domain = email.from_domain.lower()
 
     # Check specific signals in priority order
     if any(k.startswith("X-GitHub-") for k in headers):
         return f"{prefix}/github"
     if any(k.startswith("X-JIRA-") for k in headers):
         return f"{prefix}/jira"
+
+    # Calendar invites (iCalendar Content-Type or subject signals)
+    content_type = headers.get("Content-Type", "")
+    if "text/calendar" in content_type or "application/ics" in content_type:
+        return f"{prefix}/calendar"
+    if any(kw in subject for kw in ("invite:", "invitation:", "rsvp", "calendar event")):
+        return f"{prefix}/calendar"
+
+    # Security / auth (check before receipts — OTP emails from payment domains are security)
+    if _SECURITY_SUBJECT.search(email.subject or ""):
+        return f"{prefix}/security"
+    if from_domain in _SECURITY_DOMAINS:
+        return f"{prefix}/security"
+
+    # Receipts / transactional
+    if _RECEIPT_SUBJECT.search(email.subject or ""):
+        return f"{prefix}/receipts"
+    if from_domain in _RECEIPT_DOMAINS:
+        return f"{prefix}/receipts"
+
     if "Auto-Submitted" in headers:
         return f"{prefix}/automated"
 

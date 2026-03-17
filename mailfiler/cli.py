@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import click
+from rich.console import Console
+from rich.table import Table
 
 from mailfiler.config import load_config
 from mailfiler.db.queries import (
@@ -20,6 +22,25 @@ if TYPE_CHECKING:
     import sqlite3
 
     from mailfiler.config import AppConfig
+
+console = Console(width=120)
+
+# Action → display style mapping
+_ACTION_STYLES = {
+    "archive": "yellow",
+    "label": "cyan",
+    "keep_inbox": "green",
+    "mark_read": "dim",
+    "trash": "red",
+}
+
+# Decision source → display style mapping
+_SOURCE_STYLES = {
+    "cache:sender": "blue",
+    "cache:domain": "blue",
+    "heuristic": "magenta",
+    "llm": "bright_yellow",
+}
 
 
 @click.group()
@@ -49,12 +70,12 @@ def start(ctx: click.Context) -> None:
 
     pid_file = PIDFile(pid_path)
     if pid_file.read() is not None:
-        click.echo("Daemon appears to already be running. Use 'mailfiler stop' first.")
+        console.print("[red]Daemon appears to already be running.[/] Use 'mailfiler stop' first.")
         return
 
-    click.echo(
-        f"Daemon start is a placeholder — use 'mailfiler run' for foreground mode.\n"
-        f"Run mode: {config.daemon.run_mode}"
+    console.print(
+        f"Daemon start is a placeholder — use [bold]mailfiler run[/] for foreground mode.\n"
+        f"Run mode: [cyan]{config.daemon.run_mode}[/]"
     )
 
 
@@ -69,24 +90,31 @@ def stop(ctx: click.Context) -> None:
 
     stopped = stop_daemon(pid_path)
     if stopped:
-        click.echo("Daemon stopped.")
+        console.print("[green]Daemon stopped.[/]")
     else:
-        click.echo("Daemon is not running.")
+        console.print("[dim]Daemon is not running.[/]")
 
 
 @cli.command()
 @click.pass_context
 def run(ctx: click.Context) -> None:
     """Run one processing pass in the foreground."""
-    config: AppConfig = ctx.obj["config"]
-    conn: sqlite3.Connection = ctx.obj["conn"]
+    from rich.live import Live
 
     from mailfiler.mail.gmail_auth import get_gmail_service
     from mailfiler.mail.gmail_client import GmailMailClient
     from mailfiler.pipeline.cache import CacheLayer
     from mailfiler.pipeline.heuristics import HeuristicsLayer
-    from mailfiler.pipeline.llm import AnthropicLLMProvider, LLMLayer
-    from mailfiler.pipeline.processor import PipelineProcessor
+    from mailfiler.pipeline.llm import (
+        AnthropicLLMProvider,
+        LLMLayer,
+        LMStudioLLMProvider,
+        StubLLMProvider,
+    )
+    from mailfiler.pipeline.processor import PipelineProcessor, ProcessResult
+
+    config: AppConfig = ctx.obj["config"]
+    conn: sqlite3.Connection = ctx.obj["conn"]
 
     creds_path = Path(config.gmail.credentials_file).expanduser()
     token_path = Path(config.gmail.token_file).expanduser()
@@ -94,16 +122,34 @@ def run(ctx: click.Context) -> None:
     service = get_gmail_service(creds_path, token_path)
     mail_client = GmailMailClient(service, labels_prefix=config.labels.prefix)
 
+    # Select LLM provider based on config
+    if config.llm.provider == "lmstudio":
+        llm_provider = LMStudioLLMProvider(
+            model=config.llm.model,
+            base_url=config.llm.base_url or "http://localhost:1234/v1",
+            max_tokens=config.llm.max_tokens,
+            timeout_seconds=config.llm.timeout_seconds,
+            labels_prefix=config.labels.prefix,
+        )
+    elif config.llm.provider == "anthropic":
+        llm_provider = AnthropicLLMProvider(
+            model=config.llm.model,
+            max_tokens=config.llm.max_tokens,
+            timeout_seconds=config.llm.timeout_seconds,
+            labels_prefix=config.labels.prefix,
+        )
+    else:
+        console.print(
+            f"[yellow]Unknown LLM provider '{config.llm.provider}', using stub (keep_inbox)[/]"
+        )
+        llm_provider = StubLLMProvider()
+
     processor = PipelineProcessor(
         mail_client=mail_client,
         cache_layer=CacheLayer(),
         heuristics_layer=HeuristicsLayer(),
         llm_layer=LLMLayer(
-            provider=AnthropicLLMProvider(
-                model=config.llm.model,
-                max_tokens=config.llm.max_tokens,
-                timeout_seconds=config.llm.timeout_seconds,
-            ),
+            provider=llm_provider,
             llm_threshold=config.rules.llm_threshold,
         ),
         conn=conn,
@@ -111,15 +157,57 @@ def run(ctx: click.Context) -> None:
         config=config,
     )
 
-    click.echo(f"Fetching up to {config.gmail.max_emails_per_run} unread emails...")
-    emails = mail_client.fetch_unread(max_results=config.gmail.max_emails_per_run)
-    click.echo(f"Found {len(emails)} unread emails.")
+    console.print(
+        f"[bold]mailfiler[/] [dim]|[/] mode: [cyan]{config.daemon.run_mode}[/] "
+        f"[dim]|[/] llm: [cyan]{config.llm.provider}[/]"
+    )
+    console.print()
 
-    if emails:
-        processed = processor.process_batch(emails)
-        click.echo(f"Processed {processed}/{len(emails)} emails (mode: {config.daemon.run_mode})")
-    else:
-        click.echo("Inbox zero! Nothing to process.")
+    with console.status("[bold]Fetching unread emails..."):
+        emails = mail_client.fetch_unread(max_results=config.gmail.max_emails_per_run)
+
+    if not emails:
+        console.print("[green bold]Inbox zero![/] Nothing to process.")
+        return
+
+    console.print(f"Found [bold]{len(emails)}[/] unread emails.\n")
+
+    # Build results table live
+    table = Table(show_header=True, header_style="bold", pad_edge=False)
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Action", width=12)
+    table.add_column("Source", width=14)
+    table.add_column("Conf", width=5, justify="right")
+    table.add_column("From", width=30, no_wrap=True, overflow="ellipsis")
+    table.add_column("Subject", no_wrap=True, overflow="ellipsis")
+
+    count = 0
+
+    def on_result(result: ProcessResult) -> None:
+        nonlocal count
+        count += 1
+
+        action_style = _ACTION_STYLES.get(result.action.value, "white")
+        source_style = _SOURCE_STYLES.get(result.decision_source.value, "white")
+
+        executed_marker = "" if result.executed else " [dim](dry)[/]"
+
+        table.add_row(
+            str(count),
+            f"[{action_style}]{result.action.value}[/]{executed_marker}",
+            f"[{source_style}]{result.decision_source.value}[/]",
+            f"{result.confidence:.0%}",
+            result.from_email[:30],
+            (result.subject or "(no subject)")[:50],
+        )
+
+    with Live(table, console=console, refresh_per_second=4):
+        processed = processor.process_batch(emails, on_result=on_result)
+
+    console.print()
+    console.print(
+        f"[bold green]Done.[/] Processed [bold]{processed}[/]/{len(emails)} emails."
+    )
 
 
 @cli.command()
@@ -131,16 +219,16 @@ def status(ctx: click.Context) -> None:
 
     if pid_path.exists():
         pid = pid_path.read_text().strip()
-        click.echo(f"Daemon running (PID: {pid})")
+        console.print(f"[green]Daemon running[/] (PID: {pid})")
     else:
-        click.echo("Daemon not running")
+        console.print("[dim]Daemon not running[/]")
 
     conn: sqlite3.Connection = ctx.obj["conn"]
     recent = list_processed_emails(conn, limit=1)
     if recent:
-        click.echo(f"Last processed: {recent[0]['processed_at']}")
+        console.print(f"Last processed: [cyan]{recent[0]['processed_at']}[/]")
     else:
-        click.echo("No emails processed yet")
+        console.print("[dim]No emails processed yet[/]")
 
 
 @cli.command()
@@ -152,22 +240,42 @@ def audit(ctx: click.Context, limit: int) -> None:
     entries = list_processed_emails(conn, limit=limit)
 
     if not entries:
-        click.echo("No processed emails found.")
+        console.print("[dim]No processed emails found.[/]")
         return
 
+    table = Table(
+        title=f"Last {len(entries)} processed emails",
+        show_header=True,
+        header_style="bold",
+        pad_edge=False,
+    )
+    table.add_column("Time", style="dim", width=19)
+    table.add_column("Action", width=12)
+    table.add_column("Source", width=14)
+    table.add_column("Conf", width=5, justify="right")
+    table.add_column("From", width=30, no_wrap=True, overflow="ellipsis")
+    table.add_column("Subject", no_wrap=True, overflow="ellipsis")
+    table.add_column("Label", style="cyan", width=20, no_wrap=True, overflow="ellipsis")
+
     for entry in entries:
+        action = entry["action_taken"]
         source = entry["decision_source"]
         confidence = entry["confidence"]
-        source_str = f"{source}:{confidence:.2f}" if confidence else source
-        click.echo(
-            f"{entry['processed_at']}  {entry['action_taken']:<12} "
-            f"[{source_str:<20}] {entry['from_email']:<35} "
-            f'"{entry["subject"]}"'
+
+        action_style = _ACTION_STYLES.get(action, "white")
+        source_style = _SOURCE_STYLES.get(source, "white")
+
+        table.add_row(
+            entry["processed_at"] or "",
+            f"[{action_style}]{action}[/]",
+            f"[{source_style}]{source}[/]",
+            f"{confidence:.0%}" if confidence else "-",
+            entry["from_email"][:30],
+            (entry["subject"] or "(no subject)")[:50],
+            entry["label_applied"] or "",
         )
-        if entry["label_applied"]:
-            click.echo(f"{'':>20} → {entry['label_applied']}")
-        if entry["llm_reason"]:
-            click.echo(f"{'':>20}   reason: \"{entry['llm_reason']}\"")
+
+    console.print(table)
 
 
 @cli.command()
@@ -178,12 +286,12 @@ def pin(ctx: click.Context, email: str) -> None:
     conn: sqlite3.Connection = ctx.obj["conn"]
     profile = get_sender_profile(conn, email)
     if profile is None:
-        click.echo(f"Sender {email} not found in database.")
+        console.print(f"[red]Sender {email} not found in database.[/]")
         return
     data = dict(profile)
     data["user_pinned"] = True
     upsert_sender_profile(conn, data)
-    click.echo(f"Pinned {email}")
+    console.print(f"[green]Pinned[/] {email}")
 
 
 @cli.command()
@@ -194,12 +302,12 @@ def unpin(ctx: click.Context, email: str) -> None:
     conn: sqlite3.Connection = ctx.obj["conn"]
     profile = get_sender_profile(conn, email)
     if profile is None:
-        click.echo(f"Sender {email} not found in database.")
+        console.print(f"[red]Sender {email} not found in database.[/]")
         return
     data = dict(profile)
     data["user_pinned"] = False
     upsert_sender_profile(conn, data)
-    click.echo(f"Unpinned {email}")
+    console.print(f"[dim]Unpinned[/] {email}")
 
 
 @cli.command()
@@ -210,14 +318,14 @@ def trust(ctx: click.Context, email: str) -> None:
     conn: sqlite3.Connection = ctx.obj["conn"]
     profile = get_sender_profile(conn, email)
     if profile is None:
-        click.echo(f"Sender {email} not found in database.")
+        console.print(f"[red]Sender {email} not found in database.[/]")
         return
     data = dict(profile)
     data["action"] = "keep_inbox"
     data["confidence"] = 1.0
     data["source"] = "user_override"
     upsert_sender_profile(conn, data)
-    click.echo(f"Trusted {email} — will always keep in inbox")
+    console.print(f"[green]Trusted[/] {email} — will always keep in inbox")
 
 
 @cli.command()
@@ -228,14 +336,14 @@ def block(ctx: click.Context, email: str) -> None:
     conn: sqlite3.Connection = ctx.obj["conn"]
     profile = get_sender_profile(conn, email)
     if profile is None:
-        click.echo(f"Sender {email} not found in database.")
+        console.print(f"[red]Sender {email} not found in database.[/]")
         return
     data = dict(profile)
     data["action"] = "archive"
     data["confidence"] = 1.0
     data["source"] = "user_override"
     upsert_sender_profile(conn, data)
-    click.echo(f"Blocked {email} — will always archive")
+    console.print(f"[yellow]Blocked[/] {email} — will always archive")
 
 
 @cli.command()
@@ -246,7 +354,7 @@ def stats(ctx: click.Context) -> None:
 
     total = conn.execute("SELECT COUNT(*) FROM processed_emails").fetchone()[0]
     if total == 0:
-        click.echo("No emails processed yet.")
+        console.print("[dim]No emails processed yet.[/]")
         return
 
     cache_hits = conn.execute(
@@ -262,16 +370,32 @@ def stats(ctx: click.Context) -> None:
         "SELECT COUNT(*) FROM processed_emails WHERE was_overridden = 1"
     ).fetchone()[0]
 
-    click.echo(f"Total processed:   {total}")
-    click.echo(f"Cache hits:        {cache_hits} ({cache_hits / total * 100:.1f}%)")
-    click.echo(f"Heuristic:         {heuristic} ({heuristic / total * 100:.1f}%)")
-    click.echo(f"LLM:               {llm} ({llm / total * 100:.1f}%)")
-    click.echo(f"Overridden:        {overridden} ({overridden / total * 100:.1f}%)")
+    table = Table(title="Pipeline Stats", show_header=True, header_style="bold")
+    table.add_column("Metric", width=20)
+    table.add_column("Count", justify="right", width=8)
+    table.add_column("Pct", justify="right", width=8)
+
+    table.add_row("Total processed", str(total), "")
+    table.add_row(
+        "[blue]Cache hits[/]", str(cache_hits), f"{cache_hits / total * 100:.1f}%"
+    )
+    table.add_row(
+        "[magenta]Heuristic[/]", str(heuristic), f"{heuristic / total * 100:.1f}%"
+    )
+    table.add_row(
+        "[bright_yellow]LLM[/]", str(llm), f"{llm / total * 100:.1f}%"
+    )
+    table.add_row(
+        "[red]Overridden[/]", str(overridden), f"{overridden / total * 100:.1f}%"
+    )
+
+    console.print(table)
 
     sender_count = conn.execute("SELECT COUNT(*) FROM sender_profiles").fetchone()[0]
     domain_count = conn.execute("SELECT COUNT(*) FROM domain_profiles").fetchone()[0]
-    click.echo(f"Known senders:     {sender_count}")
-    click.echo(f"Known domains:     {domain_count}")
+    console.print(
+        f"\nKnown senders: [bold]{sender_count}[/]  |  Known domains: [bold]{domain_count}[/]"
+    )
 
 
 @cli.command("reset-sender")
@@ -282,6 +406,6 @@ def reset_sender(ctx: click.Context, email: str) -> None:
     conn: sqlite3.Connection = ctx.obj["conn"]
     deleted = delete_sender_profile(conn, email)
     if deleted:
-        click.echo(f"Reset {email} — will be re-evaluated")
+        console.print(f"[green]Reset[/] {email} — will be re-evaluated")
     else:
-        click.echo(f"Sender {email} not found in database.")
+        console.print(f"[red]Sender {email} not found in database.[/]")

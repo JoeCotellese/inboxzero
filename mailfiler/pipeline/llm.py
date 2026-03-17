@@ -8,26 +8,45 @@ import re
 from typing import TYPE_CHECKING, Protocol
 
 import anthropic
+import openai
 
-from mailfiler.models import Action, LLMClassification
+from mailfiler.models import LABEL_SUFFIXES, Action, LLMClassification
 
 if TYPE_CHECKING:
     from mailfiler.models import EmailMessage
 
 logger = logging.getLogger(__name__)
 
-# Headers that are safe/useful to send to the LLM
+# Headers that are safe/useful to send to the LLM (full value included)
 _FILTERED_HEADERS = {
     "List-Unsubscribe",
+    "List-Id",
     "Precedence",
     "Auto-Submitted",
     "Return-Path",
     "Reply-To",
     "X-Mailer",
+    "X-Auto-Response-Suppress",
+    "X-Campaign-ID",
+    "Feedback-ID",
+    "X-SG-ID",         # SendGrid
+    "X-Mailgun-Tag",   # Mailgun
 }
 
+# Prefix-matched headers: include with full value (vendor-specific signals)
+_PREFIX_HEADERS = (
+    "X-GitHub-",
+    "X-JIRA-",
+    "X-Slack-",
+    "X-PagerDuty-",
+    "X-Google-",
+)
+
+# Include as "present" only (value is a long cryptographic blob)
 _BOOLEAN_HEADERS = {"DKIM-Signature"}
-_VALUE_HEADERS = {"Received-SPF"}
+
+# Include with value
+_VALUE_HEADERS = {"Received-SPF", "Authentication-Results"}
 
 _SAFE_DEFAULT = LLMClassification(
     category="unknown",
@@ -51,17 +70,19 @@ To: {to_email}
 Subject: {subject}
 Date: {date}
 Key Headers: {filtered_headers}
-Body snippet (first 500 chars): {snippet}
+
+Available labels (use one of these, or null): {available_labels}
 
 Respond with this exact JSON structure:
 {{
   "category": "action_required|reply_needed|fyi|newsletter|receipt|notification|spam",
   "priority": "high|medium|low",
   "action": "keep_inbox|archive|label",
-  "label": "<label name or null>",
+  "label": "<one of the available labels, or null>",
   "confidence": <0.0 to 1.0>,
   "reason": "<one sentence max>"
 }}"""
+
 
 
 class LLMProvider(Protocol):
@@ -72,19 +93,24 @@ class LLMProvider(Protocol):
         ...
 
 
-def build_prompt(email: EmailMessage) -> str:
+def build_prompt(email: EmailMessage, labels_prefix: str = "mailfiler") -> str:
     """Construct the user prompt for LLM classification.
 
     Only includes filtered headers to avoid leaking unnecessary data.
+    Passes available labels so the LLM picks from a consistent set.
     """
     header_parts: list[str] = []
     for key, value in email.headers.items():
-        if key in _FILTERED_HEADERS:
+        if key in _FILTERED_HEADERS or any(
+            key.startswith(prefix) for prefix in _PREFIX_HEADERS
+        ):
             header_parts.append(f"{key}: {value}")
         elif key in _BOOLEAN_HEADERS:
             header_parts.append(f"{key}: present")
         elif key in _VALUE_HEADERS:
             header_parts.append(f"{key}: {value}")
+
+    available_labels = ", ".join(f"{labels_prefix}/{s}" for s in LABEL_SUFFIXES)
 
     return _USER_TEMPLATE.format(
         display_name=email.from_display_name or "",
@@ -93,7 +119,7 @@ def build_prompt(email: EmailMessage) -> str:
         subject=email.subject or "(no subject)",
         date=email.received_at or "unknown",
         filtered_headers="; ".join(header_parts) if header_parts else "none",
-        snippet=email.snippet or "",
+        available_labels=available_labels,
     )
 
 
@@ -112,14 +138,16 @@ class AnthropicLLMProvider:
         model: str = "claude-haiku-4-5",
         max_tokens: int = 500,
         timeout_seconds: int = 10,
+        labels_prefix: str = "mailfiler",
     ) -> None:
         self._model = model
         self._max_tokens = max_tokens
+        self._labels_prefix = labels_prefix
         self._client = anthropic.Anthropic(timeout=float(timeout_seconds))
 
     def classify(self, email: EmailMessage) -> LLMClassification:
         """Classify an email via the Anthropic API."""
-        prompt = build_prompt(email)
+        prompt = build_prompt(email, labels_prefix=self._labels_prefix)
 
         response = self._client.messages.create(
             model=self._model,
@@ -158,6 +186,44 @@ def _parse_llm_response(raw_text: str) -> LLMClassification:
         confidence=data["confidence"],
         reason=data.get("reason"),
     )
+
+
+class LMStudioLLMProvider:
+    """LLM provider using LM Studio's OpenAI-compatible API."""
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        base_url: str = "http://localhost:1234/v1",
+        max_tokens: int = 500,
+        timeout_seconds: int = 30,
+        labels_prefix: str = "mailfiler",
+    ) -> None:
+        self._model = model
+        self._max_tokens = max_tokens
+        self._labels_prefix = labels_prefix
+        self._client = openai.OpenAI(
+            base_url=base_url,
+            api_key="lm-studio",
+            timeout=float(timeout_seconds),
+        )
+
+    def classify(self, email: EmailMessage) -> LLMClassification:
+        """Classify an email via LM Studio."""
+        prompt = build_prompt(email, labels_prefix=self._labels_prefix)
+
+        response = self._client.chat.completions.create(
+            model=self._model,
+            max_tokens=self._max_tokens,
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        )
+
+        raw_text = response.choices[0].message.content
+        return _parse_llm_response(raw_text)
 
 
 class StubLLMProvider:

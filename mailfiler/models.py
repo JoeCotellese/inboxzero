@@ -5,6 +5,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+# Canonical label suffixes — single source of truth for heuristics + LLM prompt
+LABEL_SUFFIXES = (
+    "newsletter",
+    "marketing",
+    "github",
+    "jira",
+    "automated",
+    "receipts",
+    "calendar",
+    "security",
+    "archived",
+)
+
 
 class Action(StrEnum):
     """Gmail actions the pipeline can take."""

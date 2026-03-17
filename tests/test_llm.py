@@ -67,10 +67,18 @@ class TestBuildPrompt:
         assert "vendor@newco.io" in prompt
         assert "Partnership opportunity" in prompt
 
-    def test_includes_snippet(self) -> None:
+    def test_includes_available_labels(self) -> None:
         email = _make_email()
         prompt = build_prompt(email)
-        assert "partner with you" in prompt
+        assert "mailfiler/newsletter" in prompt
+        assert "mailfiler/github" in prompt
+        assert "mailfiler/archived" in prompt
+
+    def test_uses_custom_labels_prefix(self) -> None:
+        email = _make_email()
+        prompt = build_prompt(email, labels_prefix="triage")
+        assert "triage/newsletter" in prompt
+        assert "triage/github" in prompt
 
     def test_includes_filtered_headers(self) -> None:
         email = _make_email(headers={

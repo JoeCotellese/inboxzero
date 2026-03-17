@@ -6,10 +6,11 @@ poll_interval_minutes = 5
 max_emails_per_run = 50
 
 [llm]
-provider = "anthropic"
-model = "claude-haiku-4-5"
+provider = "anthropic"       # "anthropic", "lmstudio", or leave blank for stub
+model = "claude-haiku-4-5"   # For lmstudio: use the model name loaded in LM Studio
 max_tokens = 500
 timeout_seconds = 10
+base_url = ""                # For lmstudio: "http://localhost:1234/v1"
 
 [rules]
 allow_trash = false
