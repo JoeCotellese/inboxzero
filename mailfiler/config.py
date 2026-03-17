@@ -34,7 +34,7 @@ class LLMConfig(BaseModel):
     """LLM provider settings."""
 
     provider: str = "anthropic"
-    model: str = "claude-haiku-4-5"
+    model: str = ""
     max_tokens: int = Field(default=500, gt=0)
     timeout_seconds: int = Field(default=10, gt=0)
     base_url: str = ""

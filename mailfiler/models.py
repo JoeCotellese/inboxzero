@@ -64,6 +64,7 @@ class EmailMessage:
     snippet: str | None
     headers: dict[str, str]
     received_at: str | None
+    body_text: str = ""
 
 
 @dataclass(frozen=True)

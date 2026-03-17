@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from unittest.mock import MagicMock
 
 from mailfiler.mail.gmail_client import GmailMailClient
@@ -18,8 +19,14 @@ def _gmail_message(
     date: str = "Mon, 16 Mar 2026 09:00:00 -0400",
     snippet: str = "Preview text here",
     extra_headers: dict[str, str] | None = None,
+    mime_parts: list[dict] | None = None,
 ) -> dict:
-    """Build a Gmail API messages.get() response dict."""
+    """Build a Gmail API messages.get() response dict.
+
+    Args:
+        mime_parts: Optional MIME parts to add to the payload.
+            If provided, payload gets a "parts" key and mimeType "multipart/alternative".
+    """
     headers = [
         {"name": "From", "value": from_header},
         {"name": "To", "value": to_header},
@@ -30,11 +37,16 @@ def _gmail_message(
         for name, value in extra_headers.items():
             headers.append({"name": name, "value": value})
 
+    payload: dict = {"headers": headers}
+    if mime_parts:
+        payload["mimeType"] = "multipart/alternative"
+        payload["parts"] = mime_parts
+
     return {
         "id": msg_id,
         "threadId": thread_id,
         "snippet": snippet,
-        "payload": {"headers": headers},
+        "payload": payload,
     }
 
 
@@ -163,6 +175,32 @@ class TestFetchUnread:
 
         assert len(results) == 3
         assert [r.subject for r in results] == ["First", "Second", "Third"]
+
+    def test_extracts_body_text_from_mime(self) -> None:
+        """Body text is extracted from MIME parts in the payload."""
+        body_data = base64.urlsafe_b64encode(b"Hi Joe, let's meet Tuesday.").decode()
+        msg = _gmail_message(
+            msg_id="body_1",
+            mime_parts=[
+                {"mimeType": "text/plain", "body": {"data": body_data}},
+            ],
+        )
+        service = _mock_service_with_messages([msg])
+
+        client = GmailMailClient(service)
+        results = client.fetch_unread(max_results=10)
+
+        assert results[0].body_text == "Hi Joe, let's meet Tuesday."
+
+    def test_body_text_empty_when_no_mime_body(self) -> None:
+        """body_text defaults to empty string when payload has no body parts."""
+        msg = _gmail_message(msg_id="nobody_1")
+        service = _mock_service_with_messages([msg])
+
+        client = GmailMailClient(service)
+        results = client.fetch_unread(max_results=10)
+
+        assert results[0].body_text == ""
 
 
 class TestApplyAction:

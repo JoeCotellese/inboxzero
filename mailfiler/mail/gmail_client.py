@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from mailfiler.mail.actions import action_to_label_mods
+from mailfiler.mail.body import extract_body_text
 from mailfiler.models import Action, EmailMessage
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,8 @@ def _parse_message(raw: dict[str, Any]) -> EmailMessage:
         if name:
             headers_dict[name] = value
 
+    body_text = extract_body_text(raw.get("payload", {}))
+
     return EmailMessage(
         gmail_message_id=raw["id"],
         gmail_thread_id=raw.get("threadId"),
@@ -80,6 +83,7 @@ def _parse_message(raw: dict[str, Any]) -> EmailMessage:
         snippet=raw.get("snippet"),
         headers=headers_dict,
         received_at=received_at,
+        body_text=body_text,
     )
 
 

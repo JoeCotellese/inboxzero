@@ -80,6 +80,29 @@ class TestBuildPrompt:
         assert "triage/newsletter" in prompt
         assert "triage/github" in prompt
 
+    def test_includes_body_text(self) -> None:
+        email = _make_email()
+        email_with_body = EmailMessage(
+            gmail_message_id=email.gmail_message_id,
+            gmail_thread_id=email.gmail_thread_id,
+            from_email=email.from_email,
+            from_domain=email.from_domain,
+            from_display_name=email.from_display_name,
+            to_email=email.to_email,
+            subject=email.subject,
+            snippet=email.snippet,
+            headers=email.headers,
+            received_at=email.received_at,
+            body_text="Hi Joe, wanted to follow up on our meeting.",
+        )
+        prompt = build_prompt(email_with_body)
+        assert "Hi Joe, wanted to follow up on our meeting." in prompt
+
+    def test_empty_body_text_shows_not_available(self) -> None:
+        email = _make_email()
+        prompt = build_prompt(email)
+        assert "(not available)" in prompt
+
     def test_includes_filtered_headers(self) -> None:
         email = _make_email(headers={
             "List-Unsubscribe": "<mailto:unsub@example.com>",

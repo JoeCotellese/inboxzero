@@ -57,30 +57,44 @@ _SAFE_DEFAULT = LLMClassification(
     reason="LLM classification failed or returned low confidence",
 )
 
-_SYSTEM_PROMPT = (
-    "You are an email triage assistant. Classify the email and return a JSON object only. "
-    "No preamble, no markdown, no explanation outside the JSON."
-)
+_SYSTEM_PROMPT = """\
+You are a personal assistant triaging your boss's email inbox. Your job is to \
+decide what deserves their attention and what can be filed away.
+
+RULES:
+- If a real person wrote this email TO or CC'ing your boss, it goes to inbox. \
+People matter more than algorithms.
+- Business emails with specific recipients (To/CC lists of real people) are \
+person-to-person, even if sent from a company domain.
+- Newsletters, marketing blasts, automated notifications, and bulk mail get \
+labeled and archived. Look for: List-Unsubscribe, Precedence: bulk, ESPs, \
+noreply senders, campaign IDs.
+- Receipts, shipping confirmations, and security alerts get labeled and archived.
+- When in doubt, keep it in inbox. It's better to surface something \
+unimportant than to bury something that matters.
+
+Respond with a JSON object only. No preamble, no markdown, no explanation."""
 
 _USER_TEMPLATE = """\
-Classify this email for inbox triage.
+Triage this email for your boss.
 
 From: {display_name} <{from_email}>
 To: {to_email}
+CC: {cc}
 Subject: {subject}
 Date: {date}
-Key Headers: {filtered_headers}
+Headers: {filtered_headers}
+Body preview: {body_text}
 
-Available labels (use one of these, or null): {available_labels}
+Available labels (pick one, or null for inbox): {available_labels}
 
-Respond with this exact JSON structure:
 {{
-  "category": "action_required|reply_needed|fyi|newsletter|receipt|notification|spam",
+  "category": "person|action_required|fyi|newsletter|marketing|receipt|notification|security|spam",
   "priority": "high|medium|low",
   "action": "keep_inbox|archive|label",
   "label": "<one of the available labels, or null>",
   "confidence": <0.0 to 1.0>,
-  "reason": "<one sentence max>"
+  "reason": "<one sentence>"
 }}"""
 
 
@@ -111,14 +125,17 @@ def build_prompt(email: EmailMessage, labels_prefix: str = "mailfiler") -> str:
             header_parts.append(f"{key}: {value}")
 
     available_labels = ", ".join(f"{labels_prefix}/{s}" for s in LABEL_SUFFIXES)
+    cc = email.headers.get("Cc", email.headers.get("CC", "none"))
 
     return _USER_TEMPLATE.format(
         display_name=email.from_display_name or "",
         from_email=email.from_email,
         to_email=email.to_email,
+        cc=cc,
         subject=email.subject or "(no subject)",
         date=email.received_at or "unknown",
         filtered_headers="; ".join(header_parts) if header_parts else "none",
+        body_text=email.body_text if email.body_text else "(not available)",
         available_labels=available_labels,
     )
 
@@ -194,7 +211,7 @@ class LMStudioLLMProvider:
     def __init__(
         self,
         *,
-        model: str,
+        model: str = "qwen3-30b-a3b-2507",
         base_url: str = "http://localhost:1234/v1",
         max_tokens: int = 500,
         timeout_seconds: int = 30,

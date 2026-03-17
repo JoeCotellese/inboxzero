@@ -7,7 +7,7 @@ max_emails_per_run = 50
 
 [llm]
 provider = "anthropic"       # "anthropic", "lmstudio", or leave blank for stub
-model = "claude-haiku-4-5"   # For lmstudio: use the model name loaded in LM Studio
+model = "claude-haiku-4-5"   # For lmstudio: "qwen3-30b-a3b-2507" (good for 32GB Mac)
 max_tokens = 500
 timeout_seconds = 10
 base_url = ""                # For lmstudio: "http://localhost:1234/v1"

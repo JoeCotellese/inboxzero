@@ -123,9 +123,14 @@ def run(ctx: click.Context) -> None:
     mail_client = GmailMailClient(service, labels_prefix=config.labels.prefix)
 
     # Select LLM provider based on config
+    # When model is unset, each provider falls back to its own default
+    model_kwargs: dict[str, str] = {}
+    if config.llm.model:
+        model_kwargs["model"] = config.llm.model
+
     if config.llm.provider == "lmstudio":
         llm_provider = LMStudioLLMProvider(
-            model=config.llm.model,
+            **model_kwargs,
             base_url=config.llm.base_url or "http://localhost:1234/v1",
             max_tokens=config.llm.max_tokens,
             timeout_seconds=config.llm.timeout_seconds,
@@ -133,7 +138,7 @@ def run(ctx: click.Context) -> None:
         )
     elif config.llm.provider == "anthropic":
         llm_provider = AnthropicLLMProvider(
-            model=config.llm.model,
+            **model_kwargs,
             max_tokens=config.llm.max_tokens,
             timeout_seconds=config.llm.timeout_seconds,
             labels_prefix=config.labels.prefix,
