@@ -7,6 +7,7 @@ from enum import StrEnum
 
 # Canonical label suffixes — single source of truth for heuristics + LLM prompt
 LABEL_SUFFIXES = (
+    "inbox",
     "newsletter",
     "marketing",
     "github",

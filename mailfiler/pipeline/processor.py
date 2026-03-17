@@ -155,12 +155,16 @@ class PipelineProcessor:
                 )
                 return False
 
-        # Execute the action
-        self._mail.apply_action(email.gmail_message_id, action, label)
+        # Convert keep_inbox → archive into mailfiler/inbox label
+        # Everything gets triaged out of raw Gmail inbox
+        if action is Action.KEEP_INBOX:
+            inbox_label = f"{self._config.labels.prefix}/inbox"
+            self._mail.apply_action(email.gmail_message_id, Action.ARCHIVE, inbox_label)
+        else:
+            self._mail.apply_action(email.gmail_message_id, action, label)
 
-        # Mark as read unless keeping in inbox (so important emails stay unread)
-        if action is not Action.KEEP_INBOX:
-            self._mail.apply_action(email.gmail_message_id, Action.MARK_READ)
+        # Always mark as read — all processed emails leave the unread pool
+        self._mail.apply_action(email.gmail_message_id, Action.MARK_READ)
 
         logger.info(
             "Executed %s on %s via %s",
