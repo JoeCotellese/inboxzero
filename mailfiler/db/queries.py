@@ -6,6 +6,7 @@ and use parameterized queries exclusively.
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -188,9 +189,9 @@ def mark_reconciled(
     learned_action: str | None = None,
 ) -> None:
     """Mark a processed email as reconciled, optionally recording the learned action."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    now = datetime.now(tz=timezone.utc).isoformat()
+    now = datetime.now(tz=UTC).isoformat()
     conn.execute(
         """\
         UPDATE processed_emails

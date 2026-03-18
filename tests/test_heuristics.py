@@ -413,7 +413,6 @@ class TestLabelValidation:
 
     def test_invalid_label_falls_back_to_archived(self) -> None:
         """Config without 'github' category → GitHub email falls back to archived."""
-        from mailfiler.config import LabelCategory
 
         layer = HeuristicsLayer()
         email = _load_fixture("github_notification")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-import pytest
+import pytest  # noqa: TC002 — used as fixture type at runtime
 
 from mailfiler.config import LabelCategory
 from mailfiler.models import Action, EmailMessage, LLMClassification
@@ -201,7 +201,7 @@ class TestHealthCheck:
         from mailfiler.pipeline.llm import StubLLMProvider
 
         provider = StubLLMProvider()
-        ok, msg = provider.check_health()
+        ok, _msg = provider.check_health()
         assert ok is True
 
     def test_anthropic_missing_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -218,7 +218,7 @@ class TestHealthCheck:
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key")
         provider = AnthropicLLMProvider()
-        ok, msg = provider.check_health()
+        ok, _msg = provider.check_health()
         assert ok is True
 
     def test_lmstudio_unreachable(self) -> None:

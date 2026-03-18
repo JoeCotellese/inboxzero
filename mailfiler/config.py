@@ -76,14 +76,23 @@ class BlockedSendersConfig(BaseModel):
 
 _DEFAULT_CATEGORIES: list[LabelCategory] = [
     LabelCategory(name="inbox", description="Important emails that need attention"),
-    LabelCategory(name="newsletter", description="Subscription content, digests, editorial emails"),
+    LabelCategory(
+        name="newsletter",
+        description="Subscription content, digests, editorial emails",
+    ),
     LabelCategory(name="marketing", description="Promotional and sales emails"),
     LabelCategory(name="github", description="GitHub notifications"),
     LabelCategory(name="jira", description="Jira notifications"),
     LabelCategory(name="automated", description="Auto-generated system messages"),
-    LabelCategory(name="receipts", description="Purchase receipts, invoices, shipping confirmations"),
+    LabelCategory(
+        name="receipts",
+        description="Purchase receipts, invoices, shipping confirmations",
+    ),
     LabelCategory(name="calendar", description="Calendar invites and event updates"),
-    LabelCategory(name="security", description="Security alerts, verification codes, sign-in notifications"),
+    LabelCategory(
+        name="security",
+        description="Security alerts, verification codes, sign-in notifications",
+    ),
     LabelCategory(name="archived", description="General archive for low-priority items"),
 ]
 

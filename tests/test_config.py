@@ -262,7 +262,7 @@ class TestLabelCategories:
         assert "mailfiler/travel" in valid
         assert "mailfiler/newsletter" not in valid
 
-    def test_categories_from_toml(self, tmp_path: "Path") -> None:
+    def test_categories_from_toml(self, tmp_path: Path) -> None:
         """Categories can be loaded from a TOML file."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""\

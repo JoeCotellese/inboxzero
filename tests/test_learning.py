@@ -85,7 +85,7 @@ def _make_sender(**overrides: object) -> dict[str, object]:
 class TestLearningPhase:
     """Tests for LearningPhase.learn()."""
 
-    def test_archived_email_moved_to_inbox_pins_sender(self, tmp_db_path: "Path") -> None:
+    def test_archived_email_moved_to_inbox_pins_sender(self, tmp_db_path: Path) -> None:
         """If user moved an archived email back to INBOX, learn keep_inbox and pin."""
         conn = initialize_db(tmp_db_path)
         config = _default_config()
@@ -119,7 +119,7 @@ class TestLearningPhase:
         assert profile is not None
         assert profile["action"] == "keep_inbox"
 
-    def test_inbox_email_archived_updates_sender(self, tmp_db_path: "Path") -> None:
+    def test_inbox_email_archived_updates_sender(self, tmp_db_path: Path) -> None:
         """If user archived an email that was kept in inbox, learn archive."""
         conn = initialize_db(tmp_db_path)
         config = _default_config()
@@ -147,7 +147,7 @@ class TestLearningPhase:
         assert len(corrections) == 1
         assert corrections[0].new_action == "archive"
 
-    def test_label_changed_updates_sender_label(self, tmp_db_path: "Path") -> None:
+    def test_label_changed_updates_sender_label(self, tmp_db_path: Path) -> None:
         """If user changed the mailfiler/* label, learn the new label."""
         conn = initialize_db(tmp_db_path)
         config = _default_config()
@@ -176,7 +176,7 @@ class TestLearningPhase:
         assert corrections[0].new_label == "mailfiler/security"
         assert corrections[0].old_label == "mailfiler/newsletter"
 
-    def test_no_change_reconciled_without_correction(self, tmp_db_path: "Path") -> None:
+    def test_no_change_reconciled_without_correction(self, tmp_db_path: Path) -> None:
         """If labels match what we set, just reconcile with no correction."""
         conn = initialize_db(tmp_db_path)
         config = _default_config()
@@ -203,14 +203,11 @@ class TestLearningPhase:
         assert result is not None
         assert result["reconciled_at"] is not None
 
-    def test_gmail_api_error_skips_message(self, tmp_db_path: "Path") -> None:
+    def test_gmail_api_error_skips_message(self, tmp_db_path: Path) -> None:
         """Gmail API error → message skipped (not reconciled)."""
         conn = initialize_db(tmp_db_path)
         config = _default_config()
-        mail_client = FakeMailClient()
-        # Don't set any labels — get_message_labels returns []
-        # which means no INBOX, no mailfiler/* — but that's not an API error.
-        # Let's simulate an error by using a client that raises.
+        # Simulate an API error by using a client that raises.
 
         class ErrorMailClient(FakeMailClient):
             def get_message_labels(self, message_id: str) -> list[str]:
@@ -231,7 +228,7 @@ class TestLearningPhase:
         assert result is not None
         assert result["reconciled_at"] is None
 
-    def test_no_sender_profile_no_crash(self, tmp_db_path: "Path") -> None:
+    def test_no_sender_profile_no_crash(self, tmp_db_path: Path) -> None:
         """If sender has no profile, learning still works (just can't update profile)."""
         conn = initialize_db(tmp_db_path)
         config = _default_config()
