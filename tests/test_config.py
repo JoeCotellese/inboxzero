@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 from pydantic import ValidationError
 
-from mailfiler.config import AppConfig, RunMode, load_config
+from mailfiler.config import AppConfig, LabelCategory, LabelsConfig, RunMode, load_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -181,6 +181,136 @@ run_mode = "observe"
 """)
         with pytest.raises(ValidationError):
             load_config(config_path)
+
+
+class TestLabelCategories:
+    """Tests for configurable label categories."""
+
+    def test_default_categories_when_absent(self) -> None:
+        """No categories configured → defaults with 10 items."""
+        labels = LabelsConfig(prefix="mailfiler")
+        cats = labels.get_categories()
+        assert len(cats) == 10
+        names = [c.name for c in cats]
+        assert "inbox" in names
+        assert "archived" in names
+        assert "newsletter" in names
+
+    def test_custom_categories_parsed(self) -> None:
+        """Custom categories from config are used as-is."""
+        labels = LabelsConfig(
+            prefix="mailfiler",
+            categories=[
+                LabelCategory(name="inbox", description="Keep in inbox"),
+                LabelCategory(name="archived", description="File away"),
+                LabelCategory(name="travel", description="Travel bookings"),
+            ],
+        )
+        cats = labels.get_categories()
+        assert len(cats) == 3
+        assert cats[2].name == "travel"
+        assert cats[2].description == "Travel bookings"
+
+    def test_missing_inbox_raises(self) -> None:
+        """Custom categories missing 'inbox' → ValidationError."""
+        with pytest.raises(ValidationError, match="inbox"):
+            LabelsConfig(
+                prefix="mailfiler",
+                categories=[
+                    LabelCategory(name="archived", description="File away"),
+                ],
+            )
+
+    def test_missing_archived_raises(self) -> None:
+        """Custom categories missing 'archived' → ValidationError."""
+        with pytest.raises(ValidationError, match="archived"):
+            LabelsConfig(
+                prefix="mailfiler",
+                categories=[
+                    LabelCategory(name="inbox", description="Keep in inbox"),
+                ],
+            )
+
+    def test_get_suffixes(self) -> None:
+        """get_suffixes() returns names only as a tuple."""
+        labels = LabelsConfig(prefix="mailfiler")
+        suffixes = labels.get_suffixes()
+        assert isinstance(suffixes, tuple)
+        assert "inbox" in suffixes
+        assert "archived" in suffixes
+        assert len(suffixes) == 10
+
+    def test_get_valid_labels(self) -> None:
+        """get_valid_labels() returns full prefix/suffix names as a frozenset."""
+        labels = LabelsConfig(prefix="triage")
+        valid = labels.get_valid_labels()
+        assert isinstance(valid, frozenset)
+        assert "triage/inbox" in valid
+        assert "triage/archived" in valid
+
+    def test_get_valid_labels_custom(self) -> None:
+        """get_valid_labels() works with custom categories."""
+        labels = LabelsConfig(
+            prefix="mailfiler",
+            categories=[
+                LabelCategory(name="inbox"),
+                LabelCategory(name="archived"),
+                LabelCategory(name="travel", description="Travel stuff"),
+            ],
+        )
+        valid = labels.get_valid_labels()
+        assert "mailfiler/travel" in valid
+        assert "mailfiler/newsletter" not in valid
+
+    def test_categories_from_toml(self, tmp_path: "Path") -> None:
+        """Categories can be loaded from a TOML file."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""\
+[gmail]
+credentials_file = "x"
+token_file = "x"
+
+[llm]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+
+[rules]
+
+[vip_senders]
+emails = []
+
+[vip_domains]
+domains = []
+
+[blocked_senders]
+emails = []
+
+[labels]
+prefix = "mailfiler"
+
+[[labels.categories]]
+name = "inbox"
+description = "Important emails"
+
+[[labels.categories]]
+name = "archived"
+description = "Filed away"
+
+[[labels.categories]]
+name = "finance"
+description = "Financial emails"
+
+[database]
+path = "/tmp/test.db"
+
+[daemon]
+pid_file = "/tmp/test.pid"
+run_mode = "observe"
+""")
+        config = load_config(config_path)
+        cats = config.labels.get_categories()
+        assert len(cats) == 3
+        assert cats[2].name == "finance"
 
 
 class TestConfigDefaults:

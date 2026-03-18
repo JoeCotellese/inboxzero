@@ -452,3 +452,42 @@ class TestLabelResolution:
         # And used the new ID in the modify call
         modify_body = service.users().messages().modify.call_args.kwargs["body"]
         assert "Label_auto" in modify_body["addLabelIds"]
+
+
+class TestGetMessageLabels:
+    """Tests for get_message_labels()."""
+
+    def test_returns_resolved_label_names(self) -> None:
+        """Custom label IDs are resolved to names via the label cache."""
+        service = MagicMock()
+        service.users().labels().list.return_value.execute.return_value = _labels_list_response(
+            ("Label_1", "mailfiler/newsletter"),
+            ("Label_2", "mailfiler/github"),
+        )
+        service.users().messages().get.return_value.execute.return_value = {
+            "id": "msg_1",
+            "labelIds": ["Label_1", "INBOX"],
+        }
+
+        client = GmailMailClient(service)
+        labels = client.get_message_labels("msg_1")
+
+        assert "mailfiler/newsletter" in labels
+        assert "INBOX" in labels
+        service.users().messages().get.assert_called_with(
+            userId="me", id="msg_1", format="minimal"
+        )
+
+    def test_system_labels_returned_as_is(self) -> None:
+        """System labels like INBOX, UNREAD are not resolved through the cache."""
+        service = MagicMock()
+        service.users().labels().list.return_value.execute.return_value = _labels_list_response()
+        service.users().messages().get.return_value.execute.return_value = {
+            "id": "msg_1",
+            "labelIds": ["INBOX", "UNREAD", "STARRED"],
+        }
+
+        client = GmailMailClient(service)
+        labels = client.get_message_labels("msg_1")
+
+        assert labels == ["INBOX", "UNREAD", "STARRED"]

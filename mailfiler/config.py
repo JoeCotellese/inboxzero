@@ -6,7 +6,7 @@ import tomllib
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -18,6 +18,13 @@ class RunMode(StrEnum):
     OBSERVE = "observe"
     HEURISTICS_ONLY = "heuristics_only"
     FULL_AUTO = "full_auto"
+
+
+class LabelCategory(BaseModel):
+    """A single label category with optional description for LLM guidance."""
+
+    name: str
+    description: str = ""
 
 
 class GmailConfig(BaseModel):
@@ -67,10 +74,51 @@ class BlockedSendersConfig(BaseModel):
     emails: list[str] = Field(default_factory=list)
 
 
+_DEFAULT_CATEGORIES: list[LabelCategory] = [
+    LabelCategory(name="inbox", description="Important emails that need attention"),
+    LabelCategory(name="newsletter", description="Subscription content, digests, editorial emails"),
+    LabelCategory(name="marketing", description="Promotional and sales emails"),
+    LabelCategory(name="github", description="GitHub notifications"),
+    LabelCategory(name="jira", description="Jira notifications"),
+    LabelCategory(name="automated", description="Auto-generated system messages"),
+    LabelCategory(name="receipts", description="Purchase receipts, invoices, shipping confirmations"),
+    LabelCategory(name="calendar", description="Calendar invites and event updates"),
+    LabelCategory(name="security", description="Security alerts, verification codes, sign-in notifications"),
+    LabelCategory(name="archived", description="General archive for low-priority items"),
+]
+
+
 class LabelsConfig(BaseModel):
     """Gmail label settings."""
 
     prefix: str = "mailfiler"
+    categories: list[LabelCategory] | None = None
+
+    @model_validator(mode="after")
+    def _require_inbox_and_archived(self) -> LabelsConfig:
+        if self.categories is not None:
+            names = {c.name for c in self.categories}
+            if "inbox" not in names:
+                msg = "Custom categories must include 'inbox'"
+                raise ValueError(msg)
+            if "archived" not in names:
+                msg = "Custom categories must include 'archived'"
+                raise ValueError(msg)
+        return self
+
+    def get_categories(self) -> list[LabelCategory]:
+        """Return configured categories or defaults."""
+        if self.categories is not None:
+            return self.categories
+        return _DEFAULT_CATEGORIES
+
+    def get_suffixes(self) -> tuple[str, ...]:
+        """Return category names only, for backward compatibility."""
+        return tuple(c.name for c in self.get_categories())
+
+    def get_valid_labels(self) -> frozenset[str]:
+        """Return full prefix/suffix label names as a frozenset."""
+        return frozenset(f"{self.prefix}/{c.name}" for c in self.get_categories())
 
 
 class DatabaseConfig(BaseModel):

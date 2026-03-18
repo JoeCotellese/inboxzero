@@ -39,7 +39,8 @@ The cache learns from every decision. Repeat senders skip heuristics and LLM ent
 - **Sender management** -- pin, trust, block, or reset individual senders
 - **Audit log** -- every decision stored in SQLite with full provenance
 - **Feedback loop** -- user corrections update the cache for future accuracy
-- **Label taxonomy** -- newsletters, notifications, receipts, calendar, security, and more
+- **Configurable labels** -- define your own categories with descriptions, or use the 11 built-in defaults
+- **Implicit learning** -- move an email in Gmail and mailfiler learns your preference for that sender
 - **Docker support** -- multi-stage Dockerfile included
 
 ## Quickstart
@@ -88,13 +89,64 @@ mailfiler stats
 
 Once you're comfortable with the decisions, set `run_mode = "full_auto"` in `config.toml`.
 
+## Label Categories
+
+Labels are defined in `config.toml` under `[[labels.categories]]`. Each category becomes a Gmail label like `mailfiler/newsletter`. The `inbox` and `archived` categories are required.
+
+```toml
+[labels]
+prefix = "mailfiler"
+
+[[labels.categories]]
+name = "inbox"
+description = "Important emails that need attention"
+
+[[labels.categories]]
+name = "newsletter"
+description = "Subscription content, digests, editorial emails"
+
+[[labels.categories]]
+name = "finance"
+description = "Bank statements, invoices, tax documents"
+
+[[labels.categories]]
+name = "archived"
+description = "General archive for low-priority items"
+```
+
+Descriptions are passed to the LLM to guide classification. If you omit `[[labels.categories]]` entirely, mailfiler uses 10 built-in defaults (inbox, newsletter, marketing, github, jira, automated, receipts, calendar, security, archived).
+
+## Implicit Learning
+
+mailfiler watches for corrections you make in Gmail. On each run, it compares the current Gmail state of previously processed emails to its recorded decisions:
+
+| You do this in Gmail | mailfiler learns |
+|---|---|
+| Move an archived email back to inbox | Sender → `keep_inbox` |
+| Archive an email that was kept in inbox | Sender → `archive` |
+| Change the `mailfiler/*` label | Sender → the new label |
+
+After enough overrides (3+), mailfiler pins the sender so it stops second-guessing you. Use `--no-learn` to skip the learning phase:
+
+```bash
+mailfiler run --no-learn
+```
+
+View learned corrections:
+
+```bash
+mailfiler audit --learned
+```
+
 ## CLI Commands
 
 | Command | Description |
 |---------|-------------|
 | `mailfiler run` | Run one processing pass in the foreground |
+| `mailfiler run --no-learn` | Run without the implicit learning phase |
 | `mailfiler status` | Show daemon status |
 | `mailfiler audit` | Show recent processed emails with decisions |
+| `mailfiler audit --learned` | Show only learned corrections |
 | `mailfiler stats` | Show cache hit rate, LLM usage, override stats |
 | `mailfiler pin <email>` | Always keep sender in inbox |
 | `mailfiler unpin <email>` | Remove inbox pin |

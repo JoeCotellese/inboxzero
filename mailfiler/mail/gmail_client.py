@@ -202,6 +202,35 @@ class GmailMailClient:
         label_map[label_name] = label_id
         return label_id
 
+    def get_message_labels(self, message_id: str) -> list[str]:
+        """Get the label names currently applied to a message.
+
+        Uses format="minimal" for a lightweight API call (returns labelIds only).
+        System labels (INBOX, UNREAD, etc.) are returned as-is.
+        Custom labels are resolved from ID to name via the label cache.
+        """
+        response = (
+            self._service.users()
+            .messages()
+            .get(userId="me", id=message_id, format="minimal")
+            .execute()
+        )
+        label_ids = response.get("labelIds", [])
+
+        # Build reverse lookup: id → name
+        label_cache = self._get_label_cache()
+        id_to_name = {lid: name for name, lid in label_cache.items()}
+
+        result: list[str] = []
+        for lid in label_ids:
+            if lid in _SYSTEM_LABELS:
+                result.append(lid)
+            elif lid in id_to_name:
+                result.append(id_to_name[lid])
+            else:
+                result.append(lid)
+        return result
+
     # --- Private helpers ---
 
     def _get_label_cache(self) -> dict[str, str]:

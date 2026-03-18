@@ -29,6 +29,51 @@ emails = []
 
 [labels]
 prefix = "mailfiler"
+# inbox and archived are required; add or remove others as needed.
+
+[[labels.categories]]
+name = "inbox"
+description = "Important emails that need attention"
+
+[[labels.categories]]
+name = "newsletter"
+description = "Subscription content, digests, editorial emails"
+
+[[labels.categories]]
+name = "marketing"
+description = "Promotional and sales emails"
+
+[[labels.categories]]
+name = "github"
+description = "GitHub notifications"
+
+[[labels.categories]]
+name = "jira"
+description = "Jira notifications"
+
+[[labels.categories]]
+name = "automated"
+description = "Auto-generated system messages"
+
+[[labels.categories]]
+name = "receipts"
+description = "Purchase receipts, invoices, shipping confirmations"
+
+[[labels.categories]]
+name = "calendar"
+description = "Calendar invites and event updates"
+
+[[labels.categories]]
+name = "security"
+description = "Security alerts, verification codes, sign-in notifications"
+
+[[labels.categories]]
+name = "finance"
+description = "Bank statements, invoices, tax documents"
+
+[[labels.categories]]
+name = "archived"
+description = "General archive for low-priority items"
 
 [database]
 path = "~/.mailfiler/mailfiler.db"

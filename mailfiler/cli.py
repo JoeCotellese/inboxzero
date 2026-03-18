@@ -40,6 +40,7 @@ _SOURCE_STYLES = {
     "cache:domain": "blue",
     "heuristic": "magenta",
     "llm": "bright_yellow",
+    "user_learned": "green",
 }
 
 
@@ -96,8 +97,9 @@ def stop(ctx: click.Context) -> None:
 
 
 @cli.command()
+@click.option("--no-learn", is_flag=True, default=False, help="Skip implicit learning phase")
 @click.pass_context
-def run(ctx: click.Context) -> None:
+def run(ctx: click.Context, no_learn: bool) -> None:
     """Run one processing pass in the foreground."""
     from rich.live import Live
 
@@ -128,6 +130,8 @@ def run(ctx: click.Context) -> None:
     if config.llm.model:
         model_kwargs["model"] = config.llm.model
 
+    label_categories = config.labels.get_categories()
+
     if config.llm.provider == "lmstudio":
         llm_provider = LMStudioLLMProvider(
             **model_kwargs,
@@ -135,6 +139,7 @@ def run(ctx: click.Context) -> None:
             max_tokens=config.llm.max_tokens,
             timeout_seconds=config.llm.timeout_seconds,
             labels_prefix=config.labels.prefix,
+            label_categories=label_categories,
         )
     elif config.llm.provider == "anthropic":
         llm_provider = AnthropicLLMProvider(
@@ -142,11 +147,20 @@ def run(ctx: click.Context) -> None:
             max_tokens=config.llm.max_tokens,
             timeout_seconds=config.llm.timeout_seconds,
             labels_prefix=config.labels.prefix,
+            label_categories=label_categories,
         )
     else:
         console.print(
             f"[yellow]Unknown LLM provider '{config.llm.provider}', using stub (keep_inbox)[/]"
         )
+        llm_provider = StubLLMProvider()
+
+    # Preflight: check LLM provider connectivity
+    healthy, health_msg = llm_provider.check_health()
+    if not healthy:
+        console.print(f"[yellow]LLM provider unavailable: {health_msg}[/]")
+        console.print("[yellow]Falling back to stub (ambiguous emails → keep_inbox)[/]")
+        console.print()
         llm_provider = StubLLMProvider()
 
     processor = PipelineProcessor(
@@ -167,6 +181,22 @@ def run(ctx: click.Context) -> None:
         f"[dim]|[/] llm: [cyan]{config.llm.provider}[/]"
     )
     console.print()
+
+    # Implicit learning phase
+    if not no_learn:
+        from mailfiler.pipeline.learning import LearningPhase
+
+        with console.status("[bold]Checking for user corrections..."):
+            learning = LearningPhase()
+            corrections = learning.learn(conn, mail_client, config)
+
+        if corrections:
+            console.print(f"[green]Learned {len(corrections)} correction(s):[/]")
+            for c in corrections:
+                console.print(
+                    f"  {c.from_email}: [yellow]{c.old_action}[/] → [green]{c.new_action}[/]"
+                )
+            console.print()
 
     with console.status("[bold]Fetching unread emails..."):
         emails = mail_client.fetch_unread(max_results=config.gmail.max_emails_per_run)
@@ -238,10 +268,51 @@ def status(ctx: click.Context) -> None:
 
 @cli.command()
 @click.option("--n", "limit", default=50, help="Number of entries to show")
+@click.option("--learned", is_flag=True, default=False, help="Show only learned corrections")
 @click.pass_context
-def audit(ctx: click.Context, limit: int) -> None:
+def audit(ctx: click.Context, limit: int, learned: bool) -> None:
     """Show last N processed emails with decisions."""
+    config: AppConfig = ctx.obj["config"]
     conn: sqlite3.Connection = ctx.obj["conn"]
+
+    if learned:
+        from mailfiler.db.queries import list_learned_corrections
+
+        entries = list_learned_corrections(conn, limit=limit)
+        if not entries:
+            console.print("[dim]No learned corrections found.[/]")
+            return
+
+        table = Table(
+            title=f"Last {len(entries)} learned corrections",
+            show_header=True,
+            header_style="bold",
+            pad_edge=False,
+        )
+        table.add_column("Time", style="dim", width=19)
+        table.add_column("From", width=30, no_wrap=True, overflow="ellipsis")
+        table.add_column("Subject", no_wrap=True, overflow="ellipsis")
+        table.add_column("Action", width=12)
+        table.add_column("Learned", style="green", width=20)
+        table.add_column("Label", style="cyan", width=20, no_wrap=True, overflow="ellipsis")
+
+        for entry in entries:
+            action = entry["action_taken"]
+            learned_action = entry["learned_action"]
+            action_style = _ACTION_STYLES.get(action, "white")
+
+            table.add_row(
+                entry["reconciled_at"] or "",
+                entry["from_email"][:30],
+                (entry["subject"] or "(no subject)")[:50],
+                f"[{action_style}]{action}[/]",
+                f"{action} → {learned_action}",
+                entry["label_applied"] or "",
+            )
+
+        console.print(table)
+        return
+
     entries = list_processed_emails(conn, limit=limit)
 
     if not entries:
@@ -253,31 +324,36 @@ def audit(ctx: click.Context, limit: int) -> None:
         show_header=True,
         header_style="bold",
         pad_edge=False,
+        expand=True,
     )
-    table.add_column("Time", style="dim", width=19)
-    table.add_column("Action", width=12)
-    table.add_column("Source", width=14)
-    table.add_column("Conf", width=5, justify="right")
-    table.add_column("From", width=30, no_wrap=True, overflow="ellipsis")
-    table.add_column("Subject", no_wrap=True, overflow="ellipsis")
-    table.add_column("Label", style="cyan", width=20, no_wrap=True, overflow="ellipsis")
+    table.add_column("Action", width=10, no_wrap=True)
+    table.add_column("Source", width=10, no_wrap=True)
+    table.add_column("Conf", width=4, justify="right", no_wrap=True)
+    table.add_column("From", width=25, no_wrap=True, overflow="ellipsis")
+    table.add_column("Subject", ratio=1, overflow="fold")
+    table.add_column("Label", style="cyan", width=12, no_wrap=True, overflow="ellipsis")
+
+    prefix = config.labels.prefix + "/"
 
     for entry in entries:
         action = entry["action_taken"]
         source = entry["decision_source"]
         confidence = entry["confidence"]
+        label = entry["label_applied"] or ""
+        # Strip prefix for compact display
+        if label.startswith(prefix):
+            label = label[len(prefix):]
 
         action_style = _ACTION_STYLES.get(action, "white")
         source_style = _SOURCE_STYLES.get(source, "white")
 
         table.add_row(
-            entry["processed_at"] or "",
             f"[{action_style}]{action}[/]",
             f"[{source_style}]{source}[/]",
             f"{confidence:.0%}" if confidence else "-",
-            entry["from_email"][:30],
-            (entry["subject"] or "(no subject)")[:50],
-            entry["label_applied"] or "",
+            entry["from_email"][:25],
+            (entry["subject"] or "(no subject)")[:60],
+            label,
         )
 
     console.print(table)

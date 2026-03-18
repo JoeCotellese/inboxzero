@@ -9,8 +9,11 @@ from mailfiler.db.queries import (
     get_domain_profile,
     get_processed_email_by_gmail_id,
     get_sender_profile,
+    get_unreconciled_emails,
+    list_learned_corrections,
     list_processed_emails,
     list_sender_profiles_for_domain,
+    mark_reconciled,
     upsert_domain_profile,
     upsert_processed_email,
     upsert_sender_profile,
@@ -63,6 +66,44 @@ class TestSchema:
         conn = initialize_db(tmp_db_path)
         fk = conn.execute("PRAGMA foreign_keys").fetchone()[0]
         assert fk == 1
+        conn.close()
+
+
+class TestSchemaMigration:
+    """Tests for schema migration adding learning columns."""
+
+    def test_fresh_db_has_learning_columns(self, tmp_db_path: Path) -> None:
+        conn = initialize_db(tmp_db_path)
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(processed_emails)").fetchall()
+        }
+        assert "reconciled_at" in columns
+        assert "learned_action" in columns
+        conn.close()
+
+    def test_migration_is_idempotent(self, tmp_db_path: Path) -> None:
+        """Running initialize_db twice doesn't error on existing columns."""
+        conn1 = initialize_db(tmp_db_path)
+        conn1.close()
+        conn2 = initialize_db(tmp_db_path)
+        columns = {
+            row[1]
+            for row in conn2.execute("PRAGMA table_info(processed_emails)").fetchall()
+        }
+        assert "reconciled_at" in columns
+        assert "learned_action" in columns
+        conn2.close()
+
+    def test_has_reconciled_at_index(self, tmp_db_path: Path) -> None:
+        conn = initialize_db(tmp_db_path)
+        indexes = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+        }
+        assert "idx_processed_reconciled" in indexes
         conn.close()
 
 
@@ -273,4 +314,79 @@ class TestProcessedEmailCRUD:
         upsert_processed_email(conn, self._make_processed(action_taken="keep_inbox"))
         count = conn.execute("SELECT COUNT(*) FROM processed_emails").fetchone()[0]
         assert count == 1
+        conn.close()
+
+
+class TestReconciliationQueries:
+    """Tests for learning/reconciliation query functions."""
+
+    def _make_processed(self, **overrides: object) -> dict[str, object]:
+        defaults: dict[str, object] = {
+            "gmail_message_id": "msg_001",
+            "gmail_thread_id": "thread_001",
+            "from_email": "news@example.com",
+            "from_domain": "example.com",
+            "subject": "Weekly Digest",
+            "received_at": "2026-03-16T09:00:00Z",
+            "processed_at": "2026-03-16T10:00:00Z",
+            "action_taken": "archive",
+            "label_applied": "mailfiler/newsletter",
+            "decision_source": "cache:sender",
+            "confidence": 0.92,
+            "llm_category": None,
+            "llm_reason": None,
+            "was_overridden": False,
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def test_get_unreconciled_returns_only_unreconciled(self, tmp_db_path: Path) -> None:
+        conn = initialize_db(tmp_db_path)
+        for i in range(3):
+            upsert_processed_email(
+                conn,
+                self._make_processed(gmail_message_id=f"msg_{i:03d}"),
+            )
+        # Reconcile one
+        mark_reconciled(conn, "msg_000")
+        results = get_unreconciled_emails(conn)
+        assert len(results) == 2
+        ids = {r["gmail_message_id"] for r in results}
+        assert "msg_000" not in ids
+        conn.close()
+
+    def test_mark_reconciled_sets_timestamp_and_action(self, tmp_db_path: Path) -> None:
+        conn = initialize_db(tmp_db_path)
+        upsert_processed_email(conn, self._make_processed())
+        mark_reconciled(conn, "msg_001", learned_action="keep_inbox")
+        result = get_processed_email_by_gmail_id(conn, "msg_001")
+        assert result is not None
+        assert result["reconciled_at"] is not None
+        assert result["learned_action"] == "keep_inbox"
+        conn.close()
+
+    def test_mark_reconciled_without_learned_action(self, tmp_db_path: Path) -> None:
+        conn = initialize_db(tmp_db_path)
+        upsert_processed_email(conn, self._make_processed())
+        mark_reconciled(conn, "msg_001")
+        result = get_processed_email_by_gmail_id(conn, "msg_001")
+        assert result is not None
+        assert result["reconciled_at"] is not None
+        assert result["learned_action"] is None
+        conn.close()
+
+    def test_list_learned_corrections(self, tmp_db_path: Path) -> None:
+        conn = initialize_db(tmp_db_path)
+        for i in range(3):
+            upsert_processed_email(
+                conn,
+                self._make_processed(gmail_message_id=f"msg_{i:03d}"),
+            )
+        mark_reconciled(conn, "msg_000", learned_action="keep_inbox")
+        mark_reconciled(conn, "msg_001")  # no learned_action
+        mark_reconciled(conn, "msg_002", learned_action="archive")
+        results = list_learned_corrections(conn)
+        assert len(results) == 2
+        actions = {r["learned_action"] for r in results}
+        assert actions == {"keep_inbox", "archive"}
         conn.close()

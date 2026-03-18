@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from typing import TYPE_CHECKING, Protocol
 
 import anthropic
 import openai
 
-from mailfiler.models import LABEL_SUFFIXES, Action, LLMClassification
+from mailfiler.config import _DEFAULT_CATEGORIES, LabelCategory
+from mailfiler.models import Action, LLMClassification
 
 if TYPE_CHECKING:
     from mailfiler.models import EmailMessage
@@ -107,11 +109,16 @@ class LLMProvider(Protocol):
         ...
 
 
-def build_prompt(email: EmailMessage, labels_prefix: str = "mailfiler") -> str:
+def build_prompt(
+    email: EmailMessage,
+    labels_prefix: str = "mailfiler",
+    label_categories: list[LabelCategory] | None = None,
+) -> str:
     """Construct the user prompt for LLM classification.
 
     Only includes filtered headers to avoid leaking unnecessary data.
     Passes available labels so the LLM picks from a consistent set.
+    When label_categories are provided, includes descriptions for LLM guidance.
     """
     header_parts: list[str] = []
     for key, value in email.headers.items():
@@ -124,7 +131,16 @@ def build_prompt(email: EmailMessage, labels_prefix: str = "mailfiler") -> str:
         elif key in _VALUE_HEADERS:
             header_parts.append(f"{key}: {value}")
 
-    available_labels = ", ".join(f"{labels_prefix}/{s}" for s in LABEL_SUFFIXES)
+    categories = label_categories if label_categories is not None else _DEFAULT_CATEGORIES
+    label_parts: list[str] = []
+    for cat in categories:
+        full_label = f"{labels_prefix}/{cat.name}"
+        if cat.description:
+            label_parts.append(f"{full_label} ({cat.description})")
+        else:
+            label_parts.append(full_label)
+    available_labels = ", ".join(label_parts)
+
     cc = email.headers.get("Cc", email.headers.get("CC", "none"))
 
     return _USER_TEMPLATE.format(
@@ -156,15 +172,27 @@ class AnthropicLLMProvider:
         max_tokens: int = 500,
         timeout_seconds: int = 10,
         labels_prefix: str = "mailfiler",
+        label_categories: list[LabelCategory] | None = None,
     ) -> None:
         self._model = model
         self._max_tokens = max_tokens
         self._labels_prefix = labels_prefix
+        self._label_categories = label_categories
         self._client = anthropic.Anthropic(timeout=float(timeout_seconds))
+
+    def check_health(self) -> tuple[bool, str]:
+        """Check that ANTHROPIC_API_KEY is set."""
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            return False, "ANTHROPIC_API_KEY environment variable is not set"
+        return True, f"Anthropic ({self._model})"
 
     def classify(self, email: EmailMessage) -> LLMClassification:
         """Classify an email via the Anthropic API."""
-        prompt = build_prompt(email, labels_prefix=self._labels_prefix)
+        prompt = build_prompt(
+            email,
+            labels_prefix=self._labels_prefix,
+            label_categories=self._label_categories,
+        )
 
         response = self._client.messages.create(
             model=self._model,
@@ -216,19 +244,34 @@ class LMStudioLLMProvider:
         max_tokens: int = 500,
         timeout_seconds: int = 30,
         labels_prefix: str = "mailfiler",
+        label_categories: list[LabelCategory] | None = None,
     ) -> None:
         self._model = model
         self._max_tokens = max_tokens
         self._labels_prefix = labels_prefix
+        self._label_categories = label_categories
+        self._base_url = base_url
         self._client = openai.OpenAI(
             base_url=base_url,
             api_key="lm-studio",
             timeout=float(timeout_seconds),
         )
 
+    def check_health(self) -> tuple[bool, str]:
+        """Check connectivity to LM Studio by listing models."""
+        try:
+            self._client.models.list()
+        except Exception:
+            return False, f"Cannot connect to LM Studio at {self._base_url}"
+        return True, f"LM Studio ({self._model})"
+
     def classify(self, email: EmailMessage) -> LLMClassification:
         """Classify an email via LM Studio."""
-        prompt = build_prompt(email, labels_prefix=self._labels_prefix)
+        prompt = build_prompt(
+            email,
+            labels_prefix=self._labels_prefix,
+            label_categories=self._label_categories,
+        )
 
         response = self._client.chat.completions.create(
             model=self._model,
@@ -249,6 +292,10 @@ class StubLLMProvider:
     Use this when no real LLM API key is configured. The pipeline
     falls back to keep_inbox for any email that reaches Layer 3.
     """
+
+    def check_health(self) -> tuple[bool, str]:
+        """Stub is always healthy — it doesn't need any external service."""
+        return True, "Stub (no LLM, defaults to keep_inbox)"
 
     def classify(self, email: EmailMessage) -> LLMClassification:
         logger.info("StubLLMProvider: no LLM configured, defaulting to keep_inbox for %s",

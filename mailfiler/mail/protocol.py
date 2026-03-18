@@ -35,3 +35,7 @@ class MailClient(Protocol):
     def create_label(self, label_name: str) -> str:
         """Create a Gmail label if it doesn't exist. Returns the label ID."""
         ...
+
+    def get_message_labels(self, message_id: str) -> list[str]:
+        """Get the label names currently applied to a message."""
+        ...

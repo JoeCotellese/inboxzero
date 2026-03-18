@@ -18,6 +18,7 @@ class FakeMailClient:
         self._emails = list(emails or [])
         self.applied_actions: list[tuple[str, Action, str | None]] = []
         self.created_labels: list[str] = []
+        self._message_labels: dict[str, list[str]] = {}
 
     def fetch_unread(self, max_results: int) -> list[EmailMessage]:
         """Return stored emails up to max_results."""
@@ -40,3 +41,11 @@ class FakeMailClient:
         """Record label creation and return a fake ID."""
         self.created_labels.append(label_name)
         return f"Label_{len(self.created_labels)}"
+
+    def set_message_labels(self, message_id: str, labels: list[str]) -> None:
+        """Test helper: set the labels for a message."""
+        self._message_labels[message_id] = list(labels)
+
+    def get_message_labels(self, message_id: str) -> list[str]:
+        """Return labels previously set via set_message_labels."""
+        return list(self._message_labels.get(message_id, []))
