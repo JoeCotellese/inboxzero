@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 
+import pytest  # noqa: TC002 — used as fixture type at runtime
+
+from mailfiler.config import LabelCategory
 from mailfiler.models import Action, EmailMessage, LLMClassification
 from mailfiler.pipeline.llm import LLMLayer, LLMProvider, build_prompt
 
@@ -103,6 +106,36 @@ class TestBuildPrompt:
         prompt = build_prompt(email)
         assert "(not available)" in prompt
 
+    def test_includes_descriptions_when_categories_provided(self) -> None:
+        email = _make_email()
+        categories = [
+            LabelCategory(name="inbox", description="Important emails"),
+            LabelCategory(name="archived", description="Filed away"),
+            LabelCategory(name="travel", description="Travel bookings"),
+        ]
+        prompt = build_prompt(email, label_categories=categories)
+        assert "mailfiler/travel (Travel bookings)" in prompt
+        assert "mailfiler/inbox (Important emails)" in prompt
+
+    def test_custom_label_appears_in_prompt(self) -> None:
+        email = _make_email()
+        categories = [
+            LabelCategory(name="inbox"),
+            LabelCategory(name="archived"),
+            LabelCategory(name="finance", description="Financial emails"),
+        ]
+        prompt = build_prompt(email, label_categories=categories)
+        assert "mailfiler/finance" in prompt
+        # Default labels should NOT appear
+        assert "mailfiler/newsletter" not in prompt
+
+    def test_no_categories_uses_defaults(self) -> None:
+        email = _make_email()
+        prompt = build_prompt(email)
+        assert "mailfiler/newsletter" in prompt
+        assert "mailfiler/github" in prompt
+        assert "mailfiler/archived" in prompt
+
     def test_includes_filtered_headers(self) -> None:
         email = _make_email(headers={
             "List-Unsubscribe": "<mailto:unsub@example.com>",
@@ -161,6 +194,41 @@ class TestLLMLayer:
         result = layer.classify(_make_email())
         assert result.action is Action.KEEP_INBOX
         assert result.confidence == 0.0
+
+
+class TestHealthCheck:
+    def test_stub_always_healthy(self) -> None:
+        from mailfiler.pipeline.llm import StubLLMProvider
+
+        provider = StubLLMProvider()
+        ok, _msg = provider.check_health()
+        assert ok is True
+
+    def test_anthropic_missing_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from mailfiler.pipeline.llm import AnthropicLLMProvider
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        provider = AnthropicLLMProvider()
+        ok, msg = provider.check_health()
+        assert ok is False
+        assert "ANTHROPIC_API_KEY" in msg
+
+    def test_anthropic_has_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from mailfiler.pipeline.llm import AnthropicLLMProvider
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key")
+        provider = AnthropicLLMProvider()
+        ok, _msg = provider.check_health()
+        assert ok is True
+
+    def test_lmstudio_unreachable(self) -> None:
+        from mailfiler.pipeline.llm import LMStudioLLMProvider
+
+        # Use a port that's almost certainly not running anything
+        provider = LMStudioLLMProvider(base_url="http://127.0.0.1:19999/v1", timeout_seconds=2)
+        ok, msg = provider.check_health()
+        assert ok is False
+        assert "127.0.0.1:19999" in msg or "connect" in msg.lower()
 
 
 class TestLLMProviderProtocol:

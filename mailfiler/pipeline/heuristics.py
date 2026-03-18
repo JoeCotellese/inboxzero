@@ -231,10 +231,12 @@ class HeuristicsLayer:
         Override rules are checked first. If matched, scoring is bypassed.
         Otherwise, all archive and inbox rules are evaluated and their deltas
         summed from a baseline of 0.5. The score is clamped to [0.0, 1.0].
+        Labels are validated against configured categories.
         """
         # Check override rules first
         override = self._check_overrides(email, config)
         if override is not None:
+            override = self._validate_label(override, config)
             return override
 
         # Apply scoring rules
@@ -272,7 +274,7 @@ class HeuristicsLayer:
             category = Category.UNKNOWN
             confidence = abs(score - 0.5) * 2  # distance from midpoint
 
-        return HeuristicResult(
+        result = HeuristicResult(
             score=score,
             action=action,
             label=label,
@@ -280,6 +282,27 @@ class HeuristicsLayer:
             confidence=confidence,
             applied_rules=applied,
             is_override=False,
+        )
+        return self._validate_label(result, config)
+
+    def _validate_label(
+        self, result: HeuristicResult, config: AppConfig
+    ) -> HeuristicResult:
+        """Replace label with archived fallback if it's not in configured categories."""
+        if result.label is None:
+            return result
+        valid_labels = config.labels.get_valid_labels()
+        if result.label in valid_labels:
+            return result
+        fallback = f"{config.labels.prefix}/archived"
+        return HeuristicResult(
+            score=result.score,
+            action=result.action,
+            label=fallback,
+            category=result.category,
+            confidence=result.confidence,
+            applied_rules=result.applied_rules,
+            is_override=result.is_override,
         )
 
     def _check_overrides(

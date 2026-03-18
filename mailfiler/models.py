@@ -5,20 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-# Canonical label suffixes — single source of truth for heuristics + LLM prompt
-LABEL_SUFFIXES = (
-    "inbox",
-    "newsletter",
-    "marketing",
-    "github",
-    "jira",
-    "automated",
-    "receipts",
-    "calendar",
-    "security",
-    "archived",
-)
-
 
 class Action(StrEnum):
     """Gmail actions the pipeline can take."""
@@ -48,6 +34,7 @@ class DecisionSource(StrEnum):
     CACHE_DOMAIN = "cache:domain"
     HEURISTIC = "heuristic"
     LLM = "llm"
+    USER_LEARNED = "user_learned"
 
 
 @dataclass(frozen=True)
@@ -89,6 +76,18 @@ class HeuristicResult:
     confidence: float
     applied_rules: list[str]
     is_override: bool
+
+
+@dataclass(frozen=True)
+class LearnedCorrection:
+    """A correction detected from user's Gmail label changes."""
+
+    gmail_message_id: str
+    from_email: str
+    old_action: str
+    new_action: str
+    old_label: str | None
+    new_label: str | None
 
 
 @dataclass(frozen=True)

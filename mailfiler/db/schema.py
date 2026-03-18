@@ -73,13 +73,34 @@ CREATE TABLE IF NOT EXISTS processed_emails (
     confidence      REAL,
     llm_category    TEXT,
     llm_reason      TEXT,
-    was_overridden  INTEGER DEFAULT 0
+    was_overridden  INTEGER DEFAULT 0,
+    reconciled_at   TEXT,
+    learned_action  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_processed_gmail_id ON processed_emails(gmail_message_id);
 CREATE INDEX IF NOT EXISTS idx_processed_from ON processed_emails(from_email);
 CREATE INDEX IF NOT EXISTS idx_processed_at ON processed_emails(processed_at);
 """
+
+
+def _migrate_learning_columns(conn: sqlite3.Connection) -> None:
+    """Add learning columns to processed_emails for existing databases.
+
+    SQLite has no IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we check
+    PRAGMA table_info before altering.
+    """
+    existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(processed_emails)").fetchall()
+    }
+    if "reconciled_at" not in existing:
+        conn.execute("ALTER TABLE processed_emails ADD COLUMN reconciled_at TEXT")
+    if "learned_action" not in existing:
+        conn.execute("ALTER TABLE processed_emails ADD COLUMN learned_action TEXT")
+    # Index creation is idempotent via IF NOT EXISTS
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_processed_reconciled ON processed_emails(reconciled_at)"
+    )
 
 
 def initialize_db(db_path: Path) -> sqlite3.Connection:
@@ -96,4 +117,5 @@ def initialize_db(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(_SCHEMA_SQL)
+    _migrate_learning_columns(conn)
     return conn

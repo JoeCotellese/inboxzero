@@ -6,6 +6,7 @@ and use parameterized queries exclusively.
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -166,6 +167,53 @@ def list_processed_emails(
     """List processed emails, most recent first."""
     cursor = conn.execute(
         "SELECT * FROM processed_emails ORDER BY processed_at DESC LIMIT ?",
+        (limit,),
+    )
+    return cursor.fetchall()
+
+
+def get_unreconciled_emails(
+    conn: sqlite3.Connection, limit: int = 200
+) -> list[sqlite3.Row]:
+    """Return processed emails that haven't been reconciled yet."""
+    cursor = conn.execute(
+        "SELECT * FROM processed_emails WHERE reconciled_at IS NULL LIMIT ?",
+        (limit,),
+    )
+    return cursor.fetchall()
+
+
+def mark_reconciled(
+    conn: sqlite3.Connection,
+    gmail_message_id: str,
+    learned_action: str | None = None,
+) -> None:
+    """Mark a processed email as reconciled, optionally recording the learned action."""
+    from datetime import datetime
+
+    now = datetime.now(tz=UTC).isoformat()
+    conn.execute(
+        """\
+        UPDATE processed_emails
+        SET reconciled_at = ?, learned_action = ?
+        WHERE gmail_message_id = ?
+        """,
+        (now, learned_action, gmail_message_id),
+    )
+    conn.commit()
+
+
+def list_learned_corrections(
+    conn: sqlite3.Connection, limit: int = 50
+) -> list[sqlite3.Row]:
+    """List emails where learning detected a user correction."""
+    cursor = conn.execute(
+        """\
+        SELECT * FROM processed_emails
+        WHERE learned_action IS NOT NULL
+        ORDER BY reconciled_at DESC
+        LIMIT ?
+        """,
         (limit,),
     )
     return cursor.fetchall()

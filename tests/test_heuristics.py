@@ -408,6 +408,45 @@ class TestLabelAssignment:
             assert result.label == "mailfiler/security"
 
 
+class TestLabelValidation:
+    """Labels should be validated against config categories."""
+
+    def test_invalid_label_falls_back_to_archived(self) -> None:
+        """Config without 'github' category → GitHub email falls back to archived."""
+
+        layer = HeuristicsLayer()
+        email = _load_fixture("github_notification")
+        config = _default_config(
+            labels={
+                "prefix": "mailfiler",
+                "categories": [
+                    {"name": "inbox", "description": "Important"},
+                    {"name": "archived", "description": "Filed away"},
+                    {"name": "newsletter", "description": "Newsletters"},
+                ],
+            },
+        )
+        result = layer.score(email, config)
+        # GitHub override still fires, but label should be validated
+        assert result.label == "mailfiler/archived"
+
+    def test_default_config_all_heuristic_labels_valid(self) -> None:
+        """Default config → all heuristic paths produce valid labels."""
+        layer = HeuristicsLayer()
+        default_config = _default_config()
+        valid_labels = default_config.labels.get_valid_labels()
+
+        # Test a variety of email types
+        for fixture_name in ["github_notification", "jira_notification", "newsletter_with_unsub",
+                             "marketing_esp", "noreply_automated"]:
+            email = _load_fixture(fixture_name)
+            result = layer.score(email, default_config)
+            if result.label is not None:
+                assert result.label in valid_labels, (
+                    f"Fixture {fixture_name} produced invalid label: {result.label}"
+                )
+
+
 class TestAppliedRulesAudit:
     """HeuristicResult should include which rules fired."""
 
