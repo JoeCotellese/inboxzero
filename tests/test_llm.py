@@ -47,7 +47,7 @@ class FakeLLMProvider:
                 category="fyi",
                 priority="low",
                 action=Action.ARCHIVE,
-                label="mailfiler/archived",
+                label="mailfiler/marketing",
                 confidence=0.85,
                 reason="Low priority informational email",
             )
@@ -74,14 +74,14 @@ class TestBuildPrompt:
         email = _make_email()
         prompt = build_prompt(email)
         assert "mailfiler/newsletter" in prompt
-        assert "mailfiler/github" in prompt
-        assert "mailfiler/archived" in prompt
+        assert "mailfiler/records" in prompt
+        assert "mailfiler/marketing" in prompt
 
     def test_uses_custom_labels_prefix(self) -> None:
         email = _make_email()
         prompt = build_prompt(email, labels_prefix="triage")
         assert "triage/newsletter" in prompt
-        assert "triage/github" in prompt
+        assert "triage/records" in prompt
 
     def test_includes_body_text(self) -> None:
         email = _make_email()
@@ -110,7 +110,7 @@ class TestBuildPrompt:
         email = _make_email()
         categories = [
             LabelCategory(name="inbox", description="Important emails"),
-            LabelCategory(name="archived", description="Filed away"),
+            LabelCategory(name="marketing", description="Promos and bulk"),
             LabelCategory(name="travel", description="Travel bookings"),
         ]
         prompt = build_prompt(email, label_categories=categories)
@@ -121,7 +121,6 @@ class TestBuildPrompt:
         email = _make_email()
         categories = [
             LabelCategory(name="inbox"),
-            LabelCategory(name="archived"),
             LabelCategory(name="finance", description="Financial emails"),
         ]
         prompt = build_prompt(email, label_categories=categories)
@@ -133,8 +132,8 @@ class TestBuildPrompt:
         email = _make_email()
         prompt = build_prompt(email)
         assert "mailfiler/newsletter" in prompt
-        assert "mailfiler/github" in prompt
-        assert "mailfiler/archived" in prompt
+        assert "mailfiler/records" in prompt
+        assert "mailfiler/marketing" in prompt
 
     def test_includes_filtered_headers(self) -> None:
         email = _make_email(headers={
@@ -164,7 +163,7 @@ class TestLLMLayer:
             "category": "fyi",
             "priority": "low",
             "action": "archive",
-            "label": "mailfiler/archived",
+            "label": "mailfiler/marketing",
             "confidence": 0.4,
             "reason": "Not sure about this one",
         })

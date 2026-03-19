@@ -83,7 +83,7 @@ class StubLLMLayer:
             category="fyi",
             priority="low",
             action=Action.ARCHIVE,
-            label="mailfiler/archived",
+            label="mailfiler/marketing",
             confidence=0.85,
             reason="Low priority",
         )
