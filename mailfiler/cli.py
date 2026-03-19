@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -325,7 +325,8 @@ def _apply_from_cache(
     mail_client: GmailMailClient,
 ) -> None:
     """Apply cached dry-run results from reprocess_pending.json."""
-    from mailfiler.models import Action as _Action, DecisionSource
+    from mailfiler.models import Action as _Action
+    from mailfiler.models import DecisionSource
 
     cache_file = _cache_path_for(config)
     if not cache_file.exists():
@@ -337,7 +338,7 @@ def _apply_from_cache(
 
     # Warn if cache is stale
     created = datetime.fromisoformat(data["created_at"])
-    age_hours = (datetime.now(timezone.utc) - created).total_seconds() / 3600
+    age_hours = (datetime.now(UTC) - created).total_seconds() / 3600
     if age_hours > CACHE_STALE_HOURS:
         console.print(
             f"[yellow]Cache is {age_hours:.0f}h old (stale). Proceeding anyway.[/]"
@@ -424,7 +425,7 @@ def _apply_from_cache(
     )
 
     cache_file.unlink()
-    console.print(f"[dim]Cache file removed.[/]")
+    console.print("[dim]Cache file removed.[/]")
 
 
 @cli.command()
@@ -448,7 +449,10 @@ def reprocess(ctx: click.Context, label: tuple[str, ...], apply_changes: bool, l
 
     # Neither --apply nor --label: show usage hint
     if not label:
-        console.print("[red]Specify at least one --label to scan, or use --apply to apply cached results.[/]")
+        console.print(
+            "[red]Specify at least one --label to scan,"
+            " or use --apply to apply cached results.[/]"
+        )
         raise SystemExit(1)
 
     processor, mail_client = _build_pipeline(config, conn)
@@ -574,7 +578,7 @@ def reprocess(ctx: click.Context, label: tuple[str, ...], apply_changes: bool, l
     if not apply_changes and (pending_changes or pending_deleted):
         cache_file = _cache_path_for(config)
         cache_data = {
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
             "labels": list(label),
             "changes": pending_changes,
             "deleted": pending_deleted,
@@ -586,9 +590,9 @@ def reprocess(ctx: click.Context, label: tuple[str, ...], apply_changes: bool, l
             },
         }
         cache_file.write_text(json.dumps(cache_data, indent=2))
-        console.print(f"\nTo apply: [bold]mailfiler reprocess --apply[/]")
+        console.print("\nTo apply: [bold]mailfiler reprocess --apply[/]")
     elif not apply_changes and changed == 0:
-        console.print(f"\n[dim]No changes to apply.[/]")
+        console.print("\n[dim]No changes to apply.[/]")
 
 
 @cli.command()
