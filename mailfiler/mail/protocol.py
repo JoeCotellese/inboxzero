@@ -36,6 +36,18 @@ class MailClient(Protocol):
         """Create a Gmail label if it doesn't exist. Returns the label ID."""
         ...
 
+    def fetch_message(self, message_id: str) -> EmailMessage | None:
+        """Fetch a single message by ID. Returns None if not found."""
+        ...
+
+    def fetch_messages(self, message_ids: list[str]) -> dict[str, EmailMessage]:
+        """Fetch multiple messages by ID. Returns a dict of found messages."""
+        ...
+
+    def remove_label(self, message_id: str, label_name: str) -> None:
+        """Remove a single label from a message."""
+        ...
+
     def get_message_labels(self, message_id: str) -> list[str]:
         """Get the label names currently applied to a message."""
         ...

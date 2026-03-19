@@ -120,6 +120,55 @@ class GmailMailClient:
 
         return results
 
+    def fetch_message(self, message_id: str) -> EmailMessage | None:
+        """Fetch a single message by Gmail message ID.
+
+        Returns None if the message no longer exists (404).
+        Other API errors are propagated to the caller.
+        """
+        from googleapiclient.errors import HttpError
+
+        try:
+            raw = (
+                self._service.users()
+                .messages()
+                .get(userId="me", id=message_id, format="full")
+                .execute()
+            )
+        except HttpError as exc:
+            if exc.resp.status == 404:
+                return None
+            raise
+
+        return _parse_message(raw)
+
+    def fetch_messages(self, message_ids: list[str]) -> dict[str, EmailMessage]:
+        """Fetch multiple messages in a single batch API call.
+
+        Returns a dict mapping message_id → EmailMessage for messages
+        that were found. Missing/deleted messages are silently excluded.
+        """
+        if not message_ids:
+            return {}
+
+        results: dict[str, EmailMessage] = {}
+
+        def _callback(request_id: str, response: dict, exception: Exception | None) -> None:
+            if exception is not None:
+                logger.debug("Batch fetch: %s failed: %s", request_id, exception)
+                return
+            results[request_id] = _parse_message(response)
+
+        batch = self._service.new_batch_http_request()
+        for mid in message_ids:
+            request = self._service.users().messages().get(
+                userId="me", id=mid, format="full"
+            )
+            batch.add(request, callback=_callback, request_id=mid)
+        batch.execute()
+
+        return results
+
     def apply_action(
         self,
         message_id: str,
@@ -142,6 +191,18 @@ class GmailMailClient:
             body={
                 "addLabelIds": add_ids,
                 "removeLabelIds": remove_ids,
+            },
+        ).execute()
+
+    def remove_label(self, message_id: str, label_name: str) -> None:
+        """Remove a single label from a message via the Gmail API."""
+        label_id = self._resolve_label_id(label_name)
+        self._service.users().messages().modify(
+            userId="me",
+            id=message_id,
+            body={
+                "addLabelIds": [],
+                "removeLabelIds": [label_id],
             },
         ).execute()
 

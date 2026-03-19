@@ -133,6 +133,46 @@ class PipelineProcessor:
             llm_reason=llm_reason,
         )
 
+    def reprocess_email(self, email: EmailMessage) -> ProcessResult:
+        """Re-classify an email, bypassing cache and the already-processed guard.
+
+        Does NOT write to processed_emails or execute Gmail actions.
+        The caller is responsible for applying changes if desired.
+        """
+        action: Action
+        label: str | None
+        confidence: float
+        decision_source: DecisionSource
+        llm_reason: str | None = None
+
+        # Skip cache — go straight to heuristics
+        heuristic_result = self._heuristics.score(email, self._config)
+
+        if heuristic_result.is_override or heuristic_result.action is not Action.KEEP_INBOX:
+            action = heuristic_result.action
+            label = heuristic_result.label
+            confidence = heuristic_result.confidence
+            decision_source = DecisionSource.HEURISTIC
+        else:
+            # LLM for ambiguous cases
+            llm_result = self._llm.classify(email)
+            action = llm_result.action
+            label = llm_result.label
+            confidence = llm_result.confidence
+            decision_source = DecisionSource.LLM
+            llm_reason = llm_result.reason
+
+        return ProcessResult(
+            from_email=email.from_email,
+            subject=email.subject,
+            action=action,
+            label=label,
+            confidence=confidence,
+            decision_source=decision_source,
+            executed=False,
+            llm_reason=llm_reason,
+        )
+
     def _maybe_execute(
         self,
         email: EmailMessage,

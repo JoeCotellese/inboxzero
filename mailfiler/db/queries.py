@@ -203,6 +203,27 @@ def mark_reconciled(
     conn.commit()
 
 
+def get_processed_by_label(
+    conn: sqlite3.Connection, label: str, limit: int = 100
+) -> list[sqlite3.Row]:
+    """Return processed emails filed under a specific label."""
+    cursor = conn.execute(
+        "SELECT * FROM processed_emails WHERE label_applied = ? LIMIT ?",
+        (label, limit),
+    )
+    return cursor.fetchall()
+
+
+def delete_processed_email(conn: sqlite3.Connection, gmail_message_id: str) -> bool:
+    """Delete a processed email record by Gmail message ID. Returns True if deleted."""
+    cursor = conn.execute(
+        "DELETE FROM processed_emails WHERE gmail_message_id = ?",
+        (gmail_message_id,),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+
 def list_learned_corrections(
     conn: sqlite3.Connection, limit: int = 50
 ) -> list[sqlite3.Row]:

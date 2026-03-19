@@ -11,12 +11,16 @@ from rich.table import Table
 
 from mailfiler.config import load_config
 from mailfiler.db.queries import (
+    delete_processed_email,
     delete_sender_profile,
+    get_processed_by_label,
     get_sender_profile,
     list_processed_emails,
+    upsert_processed_email,
     upsert_sender_profile,
 )
 from mailfiler.db.schema import initialize_db
+from mailfiler.models import Action
 
 if TYPE_CHECKING:
     import sqlite3
@@ -101,8 +105,6 @@ def stop(ctx: click.Context) -> None:
 @click.pass_context
 def run(ctx: click.Context, no_learn: bool) -> None:
     """Run one processing pass in the foreground."""
-    from rich.live import Live
-
     from mailfiler.mail.gmail_auth import get_gmail_service
     from mailfiler.mail.gmail_client import GmailMailClient
     from mailfiler.pipeline.cache import CacheLayer
@@ -236,13 +238,238 @@ def run(ctx: click.Context, no_learn: bool) -> None:
             (result.subject or "(no subject)")[:50],
         )
 
-    with Live(table, console=console, refresh_per_second=4):
-        processed = processor.process_batch(emails, on_result=on_result)
+    processed = processor.process_batch(emails, on_result=on_result)
+
+    if count > 0:
+        console.print(table)
 
     console.print()
     console.print(
         f"[bold green]Done.[/] Processed [bold]{processed}[/]/{len(emails)} emails."
     )
+
+
+@cli.command()
+@click.option("--label", multiple=True, required=True, help="Label to reprocess (repeatable)")
+@click.option(
+    "--apply", "apply_changes", is_flag=True, default=False,
+    help="Apply changes to Gmail",
+)
+@click.option("--limit", default=100, help="Max emails per label")
+@click.pass_context
+def reprocess(ctx: click.Context, label: tuple[str, ...], apply_changes: bool, limit: int) -> None:
+    """Re-classify emails under specific labels against current rules."""
+    from mailfiler.mail.gmail_auth import get_gmail_service
+    from mailfiler.mail.gmail_client import GmailMailClient
+    from mailfiler.pipeline.cache import CacheLayer
+    from mailfiler.pipeline.heuristics import HeuristicsLayer
+    from mailfiler.pipeline.llm import (
+        AnthropicLLMProvider,
+        LLMLayer,
+        LMStudioLLMProvider,
+        StubLLMProvider,
+    )
+    from mailfiler.pipeline.processor import PipelineProcessor
+
+    config: AppConfig = ctx.obj["config"]
+    conn: sqlite3.Connection = ctx.obj["conn"]
+
+    creds_path = Path(config.gmail.credentials_file).expanduser()
+    token_path = Path(config.gmail.token_file).expanduser()
+
+    service = get_gmail_service(creds_path, token_path)
+    mail_client = GmailMailClient(service, labels_prefix=config.labels.prefix)
+
+    # Select LLM provider
+    model_kwargs: dict[str, str] = {}
+    if config.llm.model:
+        model_kwargs["model"] = config.llm.model
+
+    label_categories = config.labels.get_categories()
+
+    if config.llm.provider == "lmstudio":
+        llm_provider = LMStudioLLMProvider(
+            **model_kwargs,
+            base_url=config.llm.base_url or "http://localhost:1234/v1",
+            max_tokens=config.llm.max_tokens,
+            timeout_seconds=config.llm.timeout_seconds,
+            labels_prefix=config.labels.prefix,
+            label_categories=label_categories,
+        )
+    elif config.llm.provider == "anthropic":
+        llm_provider = AnthropicLLMProvider(
+            **model_kwargs,
+            max_tokens=config.llm.max_tokens,
+            timeout_seconds=config.llm.timeout_seconds,
+            labels_prefix=config.labels.prefix,
+            label_categories=label_categories,
+        )
+    else:
+        llm_provider = StubLLMProvider()
+
+    # Preflight: check LLM provider connectivity
+    healthy, health_msg = llm_provider.check_health()
+    if not healthy:
+        console.print(f"[yellow]LLM provider unavailable: {health_msg}[/]")
+        console.print("[yellow]Falling back to stub (ambiguous emails → keep_inbox)[/]")
+        console.print()
+        llm_provider = StubLLMProvider()
+
+    processor = PipelineProcessor(
+        mail_client=mail_client,
+        cache_layer=CacheLayer(),
+        heuristics_layer=HeuristicsLayer(),
+        llm_layer=LLMLayer(
+            provider=llm_provider,
+            llm_threshold=config.rules.llm_threshold,
+        ),
+        conn=conn,
+        run_mode=config.daemon.run_mode,
+        config=config,
+    )
+
+    mode_label = "[green]APPLY[/]" if apply_changes else "[yellow]DRY RUN[/]"
+    console.print(
+        f"[bold]mailfiler reprocess[/] {mode_label} "
+        f"[dim]|[/] labels: [cyan]{', '.join(label)}[/]"
+    )
+    console.print()
+
+    # Build results table
+    table = Table(show_header=True, header_style="bold", pad_edge=False)
+    table.add_column("From", width=30, no_wrap=True, overflow="ellipsis")
+    table.add_column("Subject", no_wrap=True, overflow="ellipsis")
+    table.add_column("Old Label", width=20, no_wrap=True, overflow="ellipsis")
+    table.add_column("New Label", width=20, no_wrap=True, overflow="ellipsis")
+    table.add_column("Status", width=12)
+
+    total = 0
+    changed = 0
+    deleted = 0
+    unchanged = 0
+
+    prefix = config.labels.prefix + "/"
+
+    for lbl in label:
+        records = get_processed_by_label(conn, lbl, limit=limit)
+        if not records:
+            console.print(f"[dim]No emails found under {lbl}[/]")
+            continue
+
+        # Batch-fetch all messages from Gmail in one API call
+        gmail_ids = [r["gmail_message_id"] for r in records]
+        with console.status(
+            f"[bold]Fetching {len(gmail_ids)} emails from Gmail..."
+        ):
+            fetched = mail_client.fetch_messages(gmail_ids)
+
+        for record in records:
+            total += 1
+            gmail_id = record["gmail_message_id"]
+
+            email = fetched.get(gmail_id)
+            if email is None:
+                # Message deleted from Gmail — clean up DB
+                delete_processed_email(conn, gmail_id)
+                deleted += 1
+                table.add_row(
+                    record["from_email"][:30],
+                    (record["subject"] or "(no subject)")[:50],
+                    lbl,
+                    "",
+                    "[red]deleted[/]",
+                )
+                continue
+
+            # Re-classify through pipeline (skips cache, no side effects)
+            result = processor.reprocess_email(email)
+
+            old_label = record["label_applied"]
+            new_label = result.label
+
+            # Determine effective label for keep_inbox
+            if result.action is Action.KEEP_INBOX:
+                new_label = f"{prefix}inbox"
+
+            if old_label == new_label:
+                unchanged += 1
+                table.add_row(
+                    email.from_email[:30],
+                    (email.subject or "(no subject)")[:50],
+                    old_label or "",
+                    new_label or "",
+                    "[dim]unchanged[/]",
+                )
+                continue
+
+            changed += 1
+
+            if apply_changes:
+                # Remove old label, apply new one
+                if old_label:
+                    mail_client.remove_label(gmail_id, old_label)
+                mail_client.apply_action(gmail_id, result.action, new_label)
+
+                # Update processed_emails record
+                upsert_processed_email(conn, {
+                    "gmail_message_id": gmail_id,
+                    "gmail_thread_id": record["gmail_thread_id"],
+                    "from_email": record["from_email"],
+                    "from_domain": record["from_domain"],
+                    "subject": record["subject"],
+                    "received_at": record["received_at"],
+                    "processed_at": record["processed_at"],
+                    "action_taken": result.action.value,
+                    "label_applied": new_label,
+                    "decision_source": result.decision_source.value,
+                    "confidence": result.confidence,
+                    "llm_category": None,
+                    "llm_reason": result.llm_reason,
+                    "was_overridden": False,
+                })
+
+                # Update sender profile
+                existing_profile = get_sender_profile(conn, email.from_email)
+                if existing_profile is not None:
+                    profile_data = dict(existing_profile)
+                    profile_data["action"] = result.action.value
+                    profile_data["label"] = new_label
+                    profile_data["confidence"] = result.confidence
+                    profile_data["source"] = result.decision_source.value
+                    upsert_sender_profile(conn, profile_data)
+
+                table.add_row(
+                    email.from_email[:30],
+                    (email.subject or "(no subject)")[:50],
+                    old_label or "",
+                    f"[green]{new_label}[/]",
+                    "[green]applied[/]",
+                )
+            else:
+                table.add_row(
+                    email.from_email[:30],
+                    (email.subject or "(no subject)")[:50],
+                    old_label or "",
+                    f"[cyan]{new_label}[/]",
+                    "[yellow]pending[/]",
+                )
+
+    if total > 0:
+        console.print(table)
+
+    console.print()
+    console.print(
+        f"[bold]Summary:[/] {total} scanned, "
+        f"[green]{changed} changed[/], "
+        f"[dim]{unchanged} unchanged[/], "
+        f"[red]{deleted} deleted[/]"
+    )
+
+    if not apply_changes and changed > 0:
+        label_args = " ".join(f"--label {lbl}" for lbl in label)
+        console.print(
+            f"\nTo apply: [bold]mailfiler reprocess {label_args} --apply[/]"
+        )
 
 
 @cli.command()
