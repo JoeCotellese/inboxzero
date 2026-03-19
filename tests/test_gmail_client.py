@@ -478,6 +478,20 @@ class TestGetMessageLabels:
             userId="me", id="msg_1", format="minimal"
         )
 
+    def test_unknown_label_id_returned_as_is(self) -> None:
+        """Label IDs not in cache and not system labels are returned as-is."""
+        service = MagicMock()
+        service.users().labels().list.return_value.execute.return_value = _labels_list_response()
+        service.users().messages().get.return_value.execute.return_value = {
+            "id": "msg_1",
+            "labelIds": ["Label_unknown"],
+        }
+
+        client = GmailMailClient(service)
+        labels = client.get_message_labels("msg_1")
+
+        assert labels == ["Label_unknown"]
+
     def test_system_labels_returned_as_is(self) -> None:
         """System labels like INBOX, UNREAD are not resolved through the cache."""
         service = MagicMock()
@@ -491,3 +505,187 @@ class TestGetMessageLabels:
         labels = client.get_message_labels("msg_1")
 
         assert labels == ["INBOX", "UNREAD", "STARRED"]
+
+
+class TestFetchMessage:
+    """Tests for fetch_message() — single message retrieval by ID."""
+
+    def test_returns_email_message_for_valid_id(self) -> None:
+        """fetch_message returns an EmailMessage for an existing message."""
+        msg = _gmail_message(msg_id="target_1", subject="Found it")
+        service = MagicMock()
+        service.users().messages().get.return_value.execute.return_value = msg
+
+        client = GmailMailClient(service)
+        result = client.fetch_message("target_1")
+
+        assert result is not None
+        assert isinstance(result, EmailMessage)
+        assert result.gmail_message_id == "target_1"
+        assert result.subject == "Found it"
+        service.users().messages().get.assert_called_with(
+            userId="me", id="target_1", format="full"
+        )
+
+    def test_returns_none_on_404(self) -> None:
+        """fetch_message returns None when the message doesn't exist (404)."""
+        from unittest.mock import PropertyMock
+
+        from googleapiclient.errors import HttpError
+
+        service = MagicMock()
+        resp = MagicMock()
+        type(resp).status = PropertyMock(return_value=404)
+        service.users().messages().get.return_value.execute.side_effect = HttpError(
+            resp=resp, content=b"Not Found"
+        )
+
+        client = GmailMailClient(service)
+        result = client.fetch_message("deleted_msg")
+
+        assert result is None
+
+    def test_propagates_non_404_errors(self) -> None:
+        """fetch_message re-raises HttpError for non-404 status codes."""
+        from unittest.mock import PropertyMock
+
+        from googleapiclient.errors import HttpError
+
+        service = MagicMock()
+        resp = MagicMock()
+        type(resp).status = PropertyMock(return_value=403)
+        error = HttpError(resp=resp, content=b"Forbidden")
+        service.users().messages().get.return_value.execute.side_effect = error
+
+        client = GmailMailClient(service)
+        import pytest
+        with pytest.raises(HttpError):
+            client.fetch_message("forbidden_msg")
+
+
+class TestFetchMessages:
+    """Tests for fetch_messages() — batch message retrieval."""
+
+    def test_returns_dict_of_email_messages(self) -> None:
+        """fetch_messages returns a dict mapping message_id → EmailMessage."""
+        msg1 = _gmail_message(msg_id="m1", subject="First")
+        msg2 = _gmail_message(msg_id="m2", subject="Second")
+        service = MagicMock()
+
+        # BatchHttpRequest collects callbacks; we simulate executing them
+        def fake_new_batch():
+            batch = MagicMock()
+            batch._requests = []
+
+            def fake_add(request, callback, request_id):
+                batch._requests.append((request, callback, request_id))
+
+            def fake_execute():
+                msgs = {"m1": msg1, "m2": msg2}
+                for _req, cb, rid in batch._requests:
+                    if rid in msgs:
+                        cb(rid, msgs[rid], None)
+                    else:
+                        cb(rid, None, Exception("not found"))
+
+            batch.add = fake_add
+            batch.execute = fake_execute
+            return batch
+
+        service.new_batch_http_request.side_effect = fake_new_batch
+
+        client = GmailMailClient(service)
+        result = client.fetch_messages(["m1", "m2"])
+
+        assert len(result) == 2
+        assert result["m1"].subject == "First"
+        assert result["m2"].subject == "Second"
+
+    def test_missing_messages_excluded(self) -> None:
+        """Messages that error are not in the returned dict."""
+        from unittest.mock import PropertyMock
+
+        from googleapiclient.errors import HttpError
+
+        msg1 = _gmail_message(msg_id="m1", subject="Found")
+        service = MagicMock()
+
+        def fake_new_batch():
+            batch = MagicMock()
+            batch._requests = []
+
+            def fake_add(request, callback, request_id):
+                batch._requests.append((request, callback, request_id))
+
+            def fake_execute():
+                for _req, cb, rid in batch._requests:
+                    if rid == "m1":
+                        cb(rid, msg1, None)
+                    else:
+                        resp = MagicMock()
+                        type(resp).status = PropertyMock(return_value=404)
+                        cb(rid, None, HttpError(resp=resp, content=b"Not Found"))
+
+            batch.add = fake_add
+            batch.execute = fake_execute
+            return batch
+
+        service.new_batch_http_request.side_effect = fake_new_batch
+
+        client = GmailMailClient(service)
+        result = client.fetch_messages(["m1", "m_gone"])
+
+        assert len(result) == 1
+        assert "m1" in result
+        assert "m_gone" not in result
+
+    def test_empty_list_returns_empty_dict(self) -> None:
+        """fetch_messages with no IDs returns empty dict without API calls."""
+        service = MagicMock()
+        client = GmailMailClient(service)
+        result = client.fetch_messages([])
+
+        assert result == {}
+        service.new_batch_http_request.assert_not_called()
+
+
+class TestRemoveLabel:
+    """Tests for remove_label() — removing a single label from a message."""
+
+    def test_removes_custom_label(self) -> None:
+        """remove_label resolves the label name and calls modify with removeLabelIds."""
+        service = MagicMock()
+        service.users().labels().list.return_value.execute.return_value = _labels_list_response(
+            ("Label_42", "mailfiler/newsletter"),
+        )
+        service.users().messages().modify.return_value.execute.return_value = {}
+
+        client = GmailMailClient(service)
+        client.remove_label("msg_1", "mailfiler/newsletter")
+
+        service.users().messages().modify.assert_called_once_with(
+            userId="me",
+            id="msg_1",
+            body={
+                "addLabelIds": [],
+                "removeLabelIds": ["Label_42"],
+            },
+        )
+
+    def test_removes_system_label(self) -> None:
+        """System labels are passed as-is without resolution."""
+        service = MagicMock()
+        service.users().labels().list.return_value.execute.return_value = _labels_list_response()
+        service.users().messages().modify.return_value.execute.return_value = {}
+
+        client = GmailMailClient(service)
+        client.remove_label("msg_1", "INBOX")
+
+        service.users().messages().modify.assert_called_once_with(
+            userId="me",
+            id="msg_1",
+            body={
+                "addLabelIds": [],
+                "removeLabelIds": ["INBOX"],
+            },
+        )

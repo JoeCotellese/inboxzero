@@ -5,8 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from mailfiler.db.queries import (
+    delete_processed_email,
     delete_sender_profile,
     get_domain_profile,
+    get_processed_by_label,
     get_processed_email_by_gmail_id,
     get_sender_profile,
     get_unreconciled_emails,
@@ -389,4 +391,79 @@ class TestReconciliationQueries:
         assert len(results) == 2
         actions = {r["learned_action"] for r in results}
         assert actions == {"keep_inbox", "archive"}
+        conn.close()
+
+
+class TestReprocessQueries:
+    """Tests for get_processed_by_label and delete_processed_email."""
+
+    def _make_processed(self, **overrides: object) -> dict[str, object]:
+        defaults: dict[str, object] = {
+            "gmail_message_id": "msg_001",
+            "gmail_thread_id": "thread_001",
+            "from_email": "news@example.com",
+            "from_domain": "example.com",
+            "subject": "Weekly Digest",
+            "received_at": "2026-03-16T09:00:00Z",
+            "processed_at": "2026-03-16T10:00:00Z",
+            "action_taken": "archive",
+            "label_applied": "mailfiler/newsletter",
+            "decision_source": "cache:sender",
+            "confidence": 0.92,
+            "llm_category": None,
+            "llm_reason": None,
+            "was_overridden": False,
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def test_get_processed_by_label_returns_matching(self, tmp_db_path: Path) -> None:
+        conn = initialize_db(tmp_db_path)
+        upsert_processed_email(conn, self._make_processed(
+            gmail_message_id="msg_nl_1", label_applied="mailfiler/newsletter",
+        ))
+        upsert_processed_email(conn, self._make_processed(
+            gmail_message_id="msg_nl_2", label_applied="mailfiler/newsletter",
+        ))
+        upsert_processed_email(conn, self._make_processed(
+            gmail_message_id="msg_mkt_1", label_applied="mailfiler/marketing",
+        ))
+
+        results = get_processed_by_label(conn, "mailfiler/newsletter", limit=100)
+        assert len(results) == 2
+        ids = {r["gmail_message_id"] for r in results}
+        assert ids == {"msg_nl_1", "msg_nl_2"}
+        conn.close()
+
+    def test_get_processed_by_label_respects_limit(self, tmp_db_path: Path) -> None:
+        conn = initialize_db(tmp_db_path)
+        for i in range(5):
+            upsert_processed_email(conn, self._make_processed(
+                gmail_message_id=f"msg_{i}", label_applied="mailfiler/newsletter",
+            ))
+
+        results = get_processed_by_label(conn, "mailfiler/newsletter", limit=3)
+        assert len(results) == 3
+        conn.close()
+
+    def test_get_processed_by_label_empty(self, tmp_db_path: Path) -> None:
+        conn = initialize_db(tmp_db_path)
+        results = get_processed_by_label(conn, "mailfiler/nonexistent", limit=100)
+        assert results == []
+        conn.close()
+
+    def test_delete_processed_email(self, tmp_db_path: Path) -> None:
+        conn = initialize_db(tmp_db_path)
+        upsert_processed_email(conn, self._make_processed())
+        assert get_processed_email_by_gmail_id(conn, "msg_001") is not None
+
+        deleted = delete_processed_email(conn, "msg_001")
+        assert deleted is True
+        assert get_processed_email_by_gmail_id(conn, "msg_001") is None
+        conn.close()
+
+    def test_delete_processed_email_nonexistent(self, tmp_db_path: Path) -> None:
+        conn = initialize_db(tmp_db_path)
+        deleted = delete_processed_email(conn, "nonexistent")
+        assert deleted is False
         conn.close()

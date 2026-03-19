@@ -77,23 +77,22 @@ class BlockedSendersConfig(BaseModel):
 _DEFAULT_CATEGORIES: list[LabelCategory] = [
     LabelCategory(name="inbox", description="Important emails that need attention"),
     LabelCategory(
-        name="newsletter",
-        description="Subscription content, digests, editorial emails",
+        name="records",
+        description="Receipts, invoices, shipping, bank statements, tax documents",
     ),
-    LabelCategory(name="marketing", description="Promotional and sales emails"),
-    LabelCategory(name="github", description="GitHub notifications"),
-    LabelCategory(name="jira", description="Jira notifications"),
-    LabelCategory(name="automated", description="Auto-generated system messages"),
-    LabelCategory(
-        name="receipts",
-        description="Purchase receipts, invoices, shipping confirmations",
-    ),
-    LabelCategory(name="calendar", description="Calendar invites and event updates"),
     LabelCategory(
         name="security",
         description="Security alerts, verification codes, sign-in notifications",
     ),
-    LabelCategory(name="archived", description="General archive for low-priority items"),
+    LabelCategory(name="calendar", description="Calendar invites and event updates"),
+    LabelCategory(
+        name="newsletter",
+        description="Subscription content, digests, editorial emails",
+    ),
+    LabelCategory(
+        name="marketing",
+        description="Promotional, political, automated, and other low-priority emails",
+    ),
 ]
 
 
@@ -104,14 +103,11 @@ class LabelsConfig(BaseModel):
     categories: list[LabelCategory] | None = None
 
     @model_validator(mode="after")
-    def _require_inbox_and_archived(self) -> LabelsConfig:
+    def _require_inbox(self) -> LabelsConfig:
         if self.categories is not None:
             names = {c.name for c in self.categories}
             if "inbox" not in names:
                 msg = "Custom categories must include 'inbox'"
-                raise ValueError(msg)
-            if "archived" not in names:
-                msg = "Custom categories must include 'archived'"
                 raise ValueError(msg)
         return self
 

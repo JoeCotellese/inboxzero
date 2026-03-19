@@ -69,9 +69,9 @@ People matter more than algorithms.
 - Business emails with specific recipients (To/CC lists of real people) are \
 person-to-person, even if sent from a company domain.
 - Newsletters, marketing blasts, automated notifications, and bulk mail get \
-labeled and archived. Look for: List-Unsubscribe, Precedence: bulk, ESPs, \
+labeled and filed. Look for: List-Unsubscribe, Precedence: bulk, ESPs, \
 noreply senders, campaign IDs.
-- Receipts, shipping confirmations, and security alerts get labeled and archived.
+- Receipts, shipping confirmations, and security alerts get labeled and filed.
 - When in doubt, keep it in inbox. It's better to surface something \
 unimportant than to bury something that matters.
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -11,17 +13,26 @@ from rich.table import Table
 
 from mailfiler.config import load_config
 from mailfiler.db.queries import (
+    delete_processed_email,
     delete_sender_profile,
+    get_processed_by_label,
     get_sender_profile,
     list_processed_emails,
+    upsert_processed_email,
     upsert_sender_profile,
 )
 from mailfiler.db.schema import initialize_db
+from mailfiler.models import Action
 
 if TYPE_CHECKING:
     import sqlite3
+    from typing import Any
 
     from mailfiler.config import AppConfig
+    from mailfiler.mail.gmail_client import GmailMailClient
+    from mailfiler.pipeline.processor import PipelineProcessor, ProcessResult
+
+CACHE_STALE_HOURS = 24
 
 console = Console(width=120)
 
@@ -96,15 +107,15 @@ def stop(ctx: click.Context) -> None:
         console.print("[dim]Daemon is not running.[/]")
 
 
-@cli.command()
-@click.option("--no-learn", is_flag=True, default=False, help="Skip implicit learning phase")
-@click.pass_context
-def run(ctx: click.Context, no_learn: bool) -> None:
-    """Run one processing pass in the foreground."""
-    from rich.live import Live
+def _build_pipeline(
+    config: AppConfig, conn: sqlite3.Connection
+) -> tuple[PipelineProcessor, GmailMailClient]:
+    """Set up Gmail client, LLM provider, and pipeline processor.
 
+    Shared by the ``run`` and ``reprocess`` commands.
+    """
     from mailfiler.mail.gmail_auth import get_gmail_service
-    from mailfiler.mail.gmail_client import GmailMailClient
+    from mailfiler.mail.gmail_client import GmailMailClient as _GmailMailClient
     from mailfiler.pipeline.cache import CacheLayer
     from mailfiler.pipeline.heuristics import HeuristicsLayer
     from mailfiler.pipeline.llm import (
@@ -113,16 +124,16 @@ def run(ctx: click.Context, no_learn: bool) -> None:
         LMStudioLLMProvider,
         StubLLMProvider,
     )
-    from mailfiler.pipeline.processor import PipelineProcessor, ProcessResult
-
-    config: AppConfig = ctx.obj["config"]
-    conn: sqlite3.Connection = ctx.obj["conn"]
 
     creds_path = Path(config.gmail.credentials_file).expanduser()
     token_path = Path(config.gmail.token_file).expanduser()
 
+    from mailfiler.pipeline.processor import (
+        PipelineProcessor as _PipelineProcessor,
+    )
+
     service = get_gmail_service(creds_path, token_path)
-    mail_client = GmailMailClient(service, labels_prefix=config.labels.prefix)
+    mail_client = _GmailMailClient(service, labels_prefix=config.labels.prefix)
 
     # Select LLM provider based on config
     # When model is unset, each provider falls back to its own default
@@ -151,7 +162,8 @@ def run(ctx: click.Context, no_learn: bool) -> None:
         )
     else:
         console.print(
-            f"[yellow]Unknown LLM provider '{config.llm.provider}', using stub (keep_inbox)[/]"
+            f"[yellow]Unknown LLM provider '{config.llm.provider}', "
+            f"using stub (keep_inbox)[/]"
         )
         llm_provider = StubLLMProvider()
 
@@ -159,11 +171,13 @@ def run(ctx: click.Context, no_learn: bool) -> None:
     healthy, health_msg = llm_provider.check_health()
     if not healthy:
         console.print(f"[yellow]LLM provider unavailable: {health_msg}[/]")
-        console.print("[yellow]Falling back to stub (ambiguous emails → keep_inbox)[/]")
+        console.print(
+            "[yellow]Falling back to stub (ambiguous emails → keep_inbox)[/]"
+        )
         console.print()
         llm_provider = StubLLMProvider()
 
-    processor = PipelineProcessor(
+    processor = _PipelineProcessor(
         mail_client=mail_client,
         cache_layer=CacheLayer(),
         heuristics_layer=HeuristicsLayer(),
@@ -175,6 +189,18 @@ def run(ctx: click.Context, no_learn: bool) -> None:
         run_mode=config.daemon.run_mode,
         config=config,
     )
+    return processor, mail_client
+
+
+@cli.command()
+@click.option("--no-learn", is_flag=True, default=False, help="Skip implicit learning phase")
+@click.pass_context
+def run(ctx: click.Context, no_learn: bool) -> None:
+    """Run one processing pass in the foreground."""
+    config: AppConfig = ctx.obj["config"]
+    conn: sqlite3.Connection = ctx.obj["conn"]
+
+    processor, mail_client = _build_pipeline(config, conn)
 
     console.print(
         f"[bold]mailfiler[/] [dim]|[/] mode: [cyan]{config.daemon.run_mode}[/] "
@@ -236,13 +262,337 @@ def run(ctx: click.Context, no_learn: bool) -> None:
             (result.subject or "(no subject)")[:50],
         )
 
-    with Live(table, console=console, refresh_per_second=4):
-        processed = processor.process_batch(emails, on_result=on_result)
+    processed = processor.process_batch(emails, on_result=on_result)
+
+    if count > 0:
+        console.print(table)
 
     console.print()
     console.print(
         f"[bold green]Done.[/] Processed [bold]{processed}[/]/{len(emails)} emails."
     )
+
+
+def _apply_reclassification(
+    conn: sqlite3.Connection,
+    mail_client: GmailMailClient,
+    gmail_id: str,
+    record: Any,
+    result: Any,
+    new_label: str | None,
+) -> None:
+    """Apply a reclassification to Gmail and update DB records."""
+    old_label = record["label_applied"]
+    if old_label:
+        mail_client.remove_label(gmail_id, old_label)
+    mail_client.apply_action(gmail_id, result.action, new_label)
+
+    upsert_processed_email(conn, {
+        "gmail_message_id": gmail_id,
+        "gmail_thread_id": record["gmail_thread_id"],
+        "from_email": record["from_email"],
+        "from_domain": record["from_domain"],
+        "subject": record["subject"],
+        "received_at": record["received_at"],
+        "processed_at": record["processed_at"],
+        "action_taken": result.action.value,
+        "label_applied": new_label,
+        "decision_source": result.decision_source.value,
+        "confidence": result.confidence,
+        "llm_category": None,
+        "llm_reason": result.llm_reason,
+        "was_overridden": False,
+    })
+
+    existing_profile = get_sender_profile(conn, record["from_email"])
+    if existing_profile is not None:
+        profile_data = dict(existing_profile)
+        profile_data["action"] = result.action.value
+        profile_data["label"] = new_label
+        profile_data["confidence"] = result.confidence
+        profile_data["source"] = result.decision_source.value
+        upsert_sender_profile(conn, profile_data)
+
+
+def _cache_path_for(config: AppConfig) -> Path:
+    """Return the path for reprocess_pending.json next to the DB file."""
+    return Path(config.database.path).expanduser().parent / "reprocess_pending.json"
+
+
+def _apply_from_cache(
+    config: AppConfig,
+    conn: sqlite3.Connection,
+    mail_client: GmailMailClient,
+) -> None:
+    """Apply cached dry-run results from reprocess_pending.json."""
+    from mailfiler.models import Action as _Action
+    from mailfiler.models import DecisionSource
+
+    cache_file = _cache_path_for(config)
+    if not cache_file.exists():
+        console.print("[red]No cached dry-run results found.[/] Run a dry-run first:")
+        console.print("  [bold]mailfiler reprocess --label <label>[/]")
+        return
+
+    data = json.loads(cache_file.read_text())
+
+    # Warn if cache is stale
+    created = datetime.fromisoformat(data["created_at"])
+    age_hours = (datetime.now(UTC) - created).total_seconds() / 3600
+    if age_hours > CACHE_STALE_HOURS:
+        console.print(
+            f"[yellow]Cache is {age_hours:.0f}h old (stale). Proceeding anyway.[/]"
+        )
+
+    changes = data.get("changes", [])
+    deleted = data.get("deleted", [])
+    summary = data.get("summary", {})
+
+    console.print(
+        f"[bold]mailfiler reprocess[/] [green]APPLY FROM CACHE[/] "
+        f"[dim]|[/] labels: [cyan]{', '.join(data.get('labels', []))}[/]"
+    )
+    console.print(
+        f"  {summary.get('changed', len(changes))} changes, "
+        f"{summary.get('deleted', len(deleted))} deletions"
+    )
+    console.print()
+
+    # Build a fake ProcessResult-like for _apply_reclassification
+    from dataclasses import dataclass
+
+    @dataclass
+    class _CachedResult:
+        action: _Action
+        label: str | None
+        confidence: float
+        decision_source: DecisionSource
+        llm_reason: str | None
+
+    table = Table(show_header=True, header_style="bold", pad_edge=False)
+    table.add_column("From", width=30, no_wrap=True, overflow="ellipsis")
+    table.add_column("Subject", no_wrap=True, overflow="ellipsis")
+    table.add_column("Old Label", width=20, no_wrap=True, overflow="ellipsis")
+    table.add_column("New Label", width=20, no_wrap=True, overflow="ellipsis")
+    table.add_column("Status", width=12)
+
+    applied_count = 0
+    for change in changes:
+        gmail_id = change["gmail_message_id"]
+
+        # Build a row-like dict matching what _apply_reclassification expects
+        record = {
+            "gmail_message_id": gmail_id,
+            "gmail_thread_id": change["gmail_thread_id"],
+            "from_email": change["from_email"],
+            "from_domain": change["from_domain"],
+            "subject": change["subject"],
+            "received_at": change["received_at"],
+            "processed_at": change["processed_at"],
+            "label_applied": change["old_label"],
+        }
+        result = _CachedResult(
+            action=_Action(change["new_action"]),
+            label=change["new_label"],
+            confidence=change["new_confidence"],
+            decision_source=DecisionSource(change["new_decision_source"]),
+            llm_reason=change.get("new_llm_reason"),
+        )
+
+        _apply_reclassification(
+            conn, mail_client, gmail_id, record, result, change["new_label"],
+        )
+        applied_count += 1
+        table.add_row(
+            change["from_email"][:30],
+            (change["subject"] or "(no subject)")[:50],
+            change["old_label"] or "",
+            f"[green]{change['new_label']}[/]",
+            "[green]applied[/]",
+        )
+
+    for gmail_id in deleted:
+        delete_processed_email(conn, gmail_id)
+
+    if applied_count > 0 or deleted:
+        console.print(table)
+
+    console.print()
+    console.print(
+        f"[bold]Summary:[/] "
+        f"[green]{applied_count} applied[/], "
+        f"[red]{len(deleted)} deleted[/]"
+    )
+
+    cache_file.unlink()
+    console.print("[dim]Cache file removed.[/]")
+
+
+@cli.command()
+@click.option("--label", multiple=True, help="Label to reprocess (repeatable)")
+@click.option(
+    "--apply", "apply_changes", is_flag=True, default=False,
+    help="Apply changes to Gmail",
+)
+@click.option("--limit", default=100, help="Max emails per label")
+@click.pass_context
+def reprocess(ctx: click.Context, label: tuple[str, ...], apply_changes: bool, limit: int) -> None:
+    """Re-classify emails under specific labels against current rules."""
+    config: AppConfig = ctx.obj["config"]
+    conn: sqlite3.Connection = ctx.obj["conn"]
+
+    # --apply without --label: apply from cache
+    if apply_changes and not label:
+        processor, mail_client = _build_pipeline(config, conn)
+        _apply_from_cache(config, conn, mail_client)
+        return
+
+    # Neither --apply nor --label: show usage hint
+    if not label:
+        console.print(
+            "[red]Specify at least one --label to scan,"
+            " or use --apply to apply cached results.[/]"
+        )
+        raise SystemExit(1)
+
+    processor, mail_client = _build_pipeline(config, conn)
+
+    mode_label = "[green]APPLY[/]" if apply_changes else "[yellow]DRY RUN[/]"
+    console.print(
+        f"[bold]mailfiler reprocess[/] {mode_label} "
+        f"[dim]|[/] labels: [cyan]{', '.join(label)}[/]"
+    )
+    console.print()
+
+    table = Table(show_header=True, header_style="bold", pad_edge=False)
+    table.add_column("From", width=30, no_wrap=True, overflow="ellipsis")
+    table.add_column("Subject", no_wrap=True, overflow="ellipsis")
+    table.add_column("Old Label", width=20, no_wrap=True, overflow="ellipsis")
+    table.add_column("New Label", width=20, no_wrap=True, overflow="ellipsis")
+    table.add_column("Status", width=12)
+
+    total = 0
+    changed = 0
+    deleted = 0
+    unchanged = 0
+    prefix = config.labels.prefix + "/"
+
+    pending_changes: list[dict[str, object]] = []
+    pending_deleted: list[str] = []
+
+    for lbl in label:
+        records = get_processed_by_label(conn, lbl, limit=limit)
+        if not records:
+            console.print(f"[dim]No emails found under {lbl}[/]")
+            continue
+
+        console.print(
+            f"[bold]{lbl}[/]: {len(records)} emails — fetching from Gmail...",
+            end="",
+        )
+        gmail_ids = [r["gmail_message_id"] for r in records]
+        fetched = mail_client.fetch_messages(gmail_ids)
+        console.print(
+            f" [green]{len(fetched)}[/] found, "
+            f"[red]{len(records) - len(fetched)}[/] deleted"
+        )
+
+        for record in records:
+            total += 1
+            gmail_id = record["gmail_message_id"]
+            email = fetched.get(gmail_id)
+
+            if email is None:
+                delete_processed_email(conn, gmail_id)
+                deleted += 1
+                pending_deleted.append(gmail_id)
+                table.add_row(
+                    record["from_email"][:30],
+                    (record["subject"] or "(no subject)")[:50],
+                    lbl, "", "[red]deleted[/]",
+                )
+                continue
+
+            result = processor.reprocess_email(email)
+            old_label = record["label_applied"]
+            new_label = result.label
+            if result.action is Action.KEEP_INBOX:
+                new_label = f"{prefix}inbox"
+
+            from_col = email.from_email[:30]
+            subj_col = (email.subject or "(no subject)")[:50]
+
+            if old_label == new_label:
+                unchanged += 1
+                table.add_row(
+                    from_col, subj_col,
+                    old_label or "", new_label or "",
+                    "[dim]unchanged[/]",
+                )
+                continue
+
+            changed += 1
+            if apply_changes:
+                _apply_reclassification(
+                    conn, mail_client, gmail_id, record, result, new_label,
+                )
+                table.add_row(
+                    from_col, subj_col,
+                    old_label or "", f"[green]{new_label}[/]",
+                    "[green]applied[/]",
+                )
+            else:
+                pending_changes.append({
+                    "gmail_message_id": gmail_id,
+                    "gmail_thread_id": record["gmail_thread_id"],
+                    "from_email": record["from_email"],
+                    "from_domain": record["from_domain"],
+                    "subject": record["subject"],
+                    "received_at": record["received_at"],
+                    "processed_at": record["processed_at"],
+                    "old_label": old_label,
+                    "new_label": new_label,
+                    "new_action": result.action.value,
+                    "new_decision_source": result.decision_source.value,
+                    "new_confidence": result.confidence,
+                    "new_llm_reason": result.llm_reason,
+                })
+                table.add_row(
+                    from_col, subj_col,
+                    old_label or "", f"[cyan]{new_label}[/]",
+                    "[yellow]pending[/]",
+                )
+
+    if total > 0:
+        console.print(table)
+
+    console.print()
+    console.print(
+        f"[bold]Summary:[/] {total} scanned, "
+        f"[green]{changed} changed[/], "
+        f"[dim]{unchanged} unchanged[/], "
+        f"[red]{deleted} deleted[/]"
+    )
+
+    # Save cache on dry-run
+    if not apply_changes and (pending_changes or pending_deleted):
+        cache_file = _cache_path_for(config)
+        cache_data = {
+            "created_at": datetime.now(UTC).isoformat(),
+            "labels": list(label),
+            "changes": pending_changes,
+            "deleted": pending_deleted,
+            "summary": {
+                "total": total,
+                "changed": changed,
+                "unchanged": unchanged,
+                "deleted": deleted,
+            },
+        }
+        cache_file.write_text(json.dumps(cache_data, indent=2))
+        console.print("\nTo apply: [bold]mailfiler reprocess --apply[/]")
+    elif not apply_changes and changed == 0:
+        console.print("\n[dim]No changes to apply.[/]")
 
 
 @cli.command()

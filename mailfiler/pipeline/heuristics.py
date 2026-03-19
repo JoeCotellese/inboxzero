@@ -201,14 +201,14 @@ def _detect_label(email: EmailMessage, config: AppConfig) -> str:
     if from_domain in _SECURITY_DOMAINS:
         return f"{prefix}/security"
 
-    # Receipts / transactional
+    # Receipts / transactional → records
     if _RECEIPT_SUBJECT.search(email.subject or ""):
-        return f"{prefix}/receipts"
+        return f"{prefix}/records"
     if from_domain in _RECEIPT_DOMAINS:
-        return f"{prefix}/receipts"
+        return f"{prefix}/records"
 
     if "Auto-Submitted" in headers:
-        return f"{prefix}/automated"
+        return f"{prefix}/marketing"
 
     # ESP / marketing signals
     x_mailer = headers.get("X-Mailer", "")
@@ -219,7 +219,7 @@ def _detect_label(email: EmailMessage, config: AppConfig) -> str:
     if "List-Unsubscribe" in headers or headers.get("Precedence", "").lower() in ("list", "bulk"):
         return f"{prefix}/newsletter"
 
-    return f"{prefix}/archived"
+    return f"{prefix}/marketing"
 
 
 class HeuristicsLayer:
@@ -288,13 +288,13 @@ class HeuristicsLayer:
     def _validate_label(
         self, result: HeuristicResult, config: AppConfig
     ) -> HeuristicResult:
-        """Replace label with archived fallback if it's not in configured categories."""
+        """Replace label with marketing fallback if it's not in configured categories."""
         if result.label is None:
             return result
         valid_labels = config.labels.get_valid_labels()
         if result.label in valid_labels:
             return result
-        fallback = f"{config.labels.prefix}/archived"
+        fallback = f"{config.labels.prefix}/marketing"
         return HeuristicResult(
             score=result.score,
             action=result.action,
@@ -324,39 +324,39 @@ class HeuristicsLayer:
                 is_override=True,
             )
 
-        # GitHub → label
+        # GitHub → marketing (dev notifications)
         if any(k.startswith("X-GitHub-") for k in headers):
             return HeuristicResult(
                 score=0.0,
-                action=Action.LABEL,
-                label=f"{prefix}/github",
+                action=Action.ARCHIVE,
+                label=f"{prefix}/marketing",
                 category=Category.NOTIFICATION,
                 confidence=0.95,
-                applied_rules=["X-GitHub override: label:github"],
+                applied_rules=["X-GitHub override: marketing"],
                 is_override=True,
             )
 
-        # JIRA → label
+        # JIRA → marketing (dev notifications)
         if any(k.startswith("X-JIRA-") for k in headers):
             return HeuristicResult(
                 score=0.0,
-                action=Action.LABEL,
-                label=f"{prefix}/jira",
+                action=Action.ARCHIVE,
+                label=f"{prefix}/marketing",
                 category=Category.NOTIFICATION,
                 confidence=0.95,
-                applied_rules=["X-JIRA override: label:jira"],
+                applied_rules=["X-JIRA override: marketing"],
                 is_override=True,
             )
 
-        # Slack → archive
+        # Slack → marketing
         if any(k.startswith("X-Slack-") for k in headers):
             return HeuristicResult(
                 score=0.0,
                 action=Action.ARCHIVE,
-                label=f"{prefix}/archived",
+                label=f"{prefix}/marketing",
                 category=Category.NOTIFICATION,
                 confidence=0.95,
-                applied_rules=["X-Slack override: archive"],
+                applied_rules=["X-Slack override: marketing"],
                 is_override=True,
             )
 

@@ -192,8 +192,8 @@ class TestOverrideRules:
         email = _load_fixture("github_notification")
         result = layer.score(email, _default_config())
         assert result.is_override is True
-        assert result.action is Action.LABEL
-        assert result.label == "mailfiler/github"
+        assert result.action is Action.ARCHIVE
+        assert result.label == "mailfiler/marketing"
         assert result.confidence == 0.95
 
     def test_jira_override(self) -> None:
@@ -201,8 +201,8 @@ class TestOverrideRules:
         email = _load_fixture("jira_notification")
         result = layer.score(email, _default_config())
         assert result.is_override is True
-        assert result.action is Action.LABEL
-        assert result.label == "mailfiler/jira"
+        assert result.action is Action.ARCHIVE
+        assert result.label == "mailfiler/marketing"
         assert result.confidence == 0.95
 
     def test_slack_override(self) -> None:
@@ -323,20 +323,20 @@ class TestLabelAssignment:
         layer = HeuristicsLayer()
         email = _load_fixture("github_notification")
         result = layer.score(email, _default_config())
-        assert result.label == "mailfiler/github"
+        assert result.label == "mailfiler/marketing"
 
     def test_jira_label(self) -> None:
         layer = HeuristicsLayer()
         email = _load_fixture("jira_notification")
         result = layer.score(email, _default_config())
-        assert result.label == "mailfiler/jira"
+        assert result.label == "mailfiler/marketing"
 
     def test_automated_label(self) -> None:
         layer = HeuristicsLayer()
         email = _make_email(headers={"Auto-Submitted": "auto-generated"})
         result = layer.score(email, _default_config())
         if result.action is Action.ARCHIVE:
-            assert result.label == "mailfiler/automated"
+            assert result.label == "mailfiler/marketing"
 
 
     def test_receipt_label_by_subject(self) -> None:
@@ -347,7 +347,7 @@ class TestLabelAssignment:
         )
         result = layer.score(email, _default_config())
         if result.action is Action.ARCHIVE:
-            assert result.label == "mailfiler/receipts"
+            assert result.label == "mailfiler/records"
 
     def test_receipt_label_by_domain(self) -> None:
         layer = HeuristicsLayer()
@@ -359,7 +359,7 @@ class TestLabelAssignment:
         )
         result = layer.score(email, _default_config())
         if result.action is Action.ARCHIVE:
-            assert result.label == "mailfiler/receipts"
+            assert result.label == "mailfiler/records"
 
     def test_calendar_label_by_content_type(self) -> None:
         layer = HeuristicsLayer()
@@ -411,8 +411,8 @@ class TestLabelAssignment:
 class TestLabelValidation:
     """Labels should be validated against config categories."""
 
-    def test_invalid_label_falls_back_to_archived(self) -> None:
-        """Config without 'github' category → GitHub email falls back to archived."""
+    def test_invalid_label_falls_back_to_marketing(self) -> None:
+        """Config without 'github' category → GitHub email falls back to marketing."""
 
         layer = HeuristicsLayer()
         email = _load_fixture("github_notification")
@@ -421,14 +421,14 @@ class TestLabelValidation:
                 "prefix": "mailfiler",
                 "categories": [
                     {"name": "inbox", "description": "Important"},
-                    {"name": "archived", "description": "Filed away"},
+                    {"name": "marketing", "description": "Promos and bulk"},
                     {"name": "newsletter", "description": "Newsletters"},
                 ],
             },
         )
         result = layer.score(email, config)
         # GitHub override still fires, but label should be validated
-        assert result.label == "mailfiler/archived"
+        assert result.label == "mailfiler/marketing"
 
     def test_default_config_all_heuristic_labels_valid(self) -> None:
         """Default config → all heuristic paths produce valid labels."""

@@ -69,7 +69,7 @@ class FakeLLMProvider:
             category="newsletter",
             priority="low",
             action=Action.ARCHIVE,
-            label="mailfiler/archived",
+            label="mailfiler/marketing",
             confidence=0.85,
             reason="LLM classified as low-priority",
         )

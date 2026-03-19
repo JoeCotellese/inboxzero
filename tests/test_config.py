@@ -187,13 +187,13 @@ class TestLabelCategories:
     """Tests for configurable label categories."""
 
     def test_default_categories_when_absent(self) -> None:
-        """No categories configured → defaults with 10 items."""
+        """No categories configured → defaults with 6 items."""
         labels = LabelsConfig(prefix="mailfiler")
         cats = labels.get_categories()
-        assert len(cats) == 10
+        assert len(cats) == 6
         names = [c.name for c in cats]
         assert "inbox" in names
-        assert "archived" in names
+        assert "marketing" in names
         assert "newsletter" in names
 
     def test_custom_categories_parsed(self) -> None:
@@ -202,14 +202,13 @@ class TestLabelCategories:
             prefix="mailfiler",
             categories=[
                 LabelCategory(name="inbox", description="Keep in inbox"),
-                LabelCategory(name="archived", description="File away"),
                 LabelCategory(name="travel", description="Travel bookings"),
             ],
         )
         cats = labels.get_categories()
-        assert len(cats) == 3
-        assert cats[2].name == "travel"
-        assert cats[2].description == "Travel bookings"
+        assert len(cats) == 2
+        assert cats[1].name == "travel"
+        assert cats[1].description == "Travel bookings"
 
     def test_missing_inbox_raises(self) -> None:
         """Custom categories missing 'inbox' → ValidationError."""
@@ -217,19 +216,19 @@ class TestLabelCategories:
             LabelsConfig(
                 prefix="mailfiler",
                 categories=[
-                    LabelCategory(name="archived", description="File away"),
+                    LabelCategory(name="marketing", description="Promos"),
                 ],
             )
 
-    def test_missing_archived_raises(self) -> None:
-        """Custom categories missing 'archived' → ValidationError."""
-        with pytest.raises(ValidationError, match="archived"):
-            LabelsConfig(
-                prefix="mailfiler",
-                categories=[
-                    LabelCategory(name="inbox", description="Keep in inbox"),
-                ],
-            )
+    def test_inbox_only_is_valid(self) -> None:
+        """Custom categories with only 'inbox' is valid."""
+        labels = LabelsConfig(
+            prefix="mailfiler",
+            categories=[
+                LabelCategory(name="inbox", description="Keep in inbox"),
+            ],
+        )
+        assert len(labels.get_categories()) == 1
 
     def test_get_suffixes(self) -> None:
         """get_suffixes() returns names only as a tuple."""
@@ -237,8 +236,8 @@ class TestLabelCategories:
         suffixes = labels.get_suffixes()
         assert isinstance(suffixes, tuple)
         assert "inbox" in suffixes
-        assert "archived" in suffixes
-        assert len(suffixes) == 10
+        assert "marketing" in suffixes
+        assert len(suffixes) == 6
 
     def test_get_valid_labels(self) -> None:
         """get_valid_labels() returns full prefix/suffix names as a frozenset."""
@@ -246,7 +245,7 @@ class TestLabelCategories:
         valid = labels.get_valid_labels()
         assert isinstance(valid, frozenset)
         assert "triage/inbox" in valid
-        assert "triage/archived" in valid
+        assert "triage/marketing" in valid
 
     def test_get_valid_labels_custom(self) -> None:
         """get_valid_labels() works with custom categories."""
@@ -254,7 +253,6 @@ class TestLabelCategories:
             prefix="mailfiler",
             categories=[
                 LabelCategory(name="inbox"),
-                LabelCategory(name="archived"),
                 LabelCategory(name="travel", description="Travel stuff"),
             ],
         )
@@ -293,10 +291,6 @@ name = "inbox"
 description = "Important emails"
 
 [[labels.categories]]
-name = "archived"
-description = "Filed away"
-
-[[labels.categories]]
 name = "finance"
 description = "Financial emails"
 
@@ -309,8 +303,8 @@ run_mode = "observe"
 """)
         config = load_config(config_path)
         cats = config.labels.get_categories()
-        assert len(cats) == 3
-        assert cats[2].name == "finance"
+        assert len(cats) == 2
+        assert cats[1].name == "finance"
 
 
 class TestConfigDefaults:

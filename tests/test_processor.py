@@ -83,7 +83,7 @@ class StubLLMLayer:
             category="fyi",
             priority="low",
             action=Action.ARCHIVE,
-            label="mailfiler/archived",
+            label="mailfiler/marketing",
             confidence=0.85,
             reason="Low priority",
         )
@@ -330,4 +330,116 @@ class TestBatchProcessing:
         count = processor.process_batch(emails)
         # All should process (default stubs return keep_inbox for ambiguous)
         assert count == 3
+        conn.close()
+
+
+class TestReprocessEmail:
+    """Tests for reprocess_email() — re-classification without side effects."""
+
+    def test_skips_cache_goes_to_heuristics(self, tmp_db_path: Path) -> None:
+        """reprocess_email bypasses cache and uses heuristics → LLM."""
+        cache_result = CacheResult(
+            action=Action.ARCHIVE,
+            label="mailfiler/newsletter",
+            confidence=0.92,
+            source=DecisionSource.CACHE_SENDER,
+            category=Category.NEWSLETTER,
+        )
+        llm = LLMClassification(
+            category="politics",
+            priority="low",
+            action=Action.ARCHIVE,
+            label="mailfiler/politics",
+            confidence=0.85,
+            reason="Political content",
+        )
+        processor, _mail, conn = _make_processor(
+            tmp_db_path=tmp_db_path,
+            cache_result=cache_result,
+            llm_result=llm,
+        )
+        email = _make_email()
+        result = processor.reprocess_email(email)
+
+        # Should NOT use cache result — should fall through to LLM
+        assert result.decision_source == DecisionSource.LLM
+        assert result.label == "mailfiler/politics"
+        conn.close()
+
+    def test_does_not_write_to_db(self, tmp_db_path: Path) -> None:
+        """reprocess_email does not write to processed_emails."""
+        llm = LLMClassification(
+            category="newsletter",
+            priority="low",
+            action=Action.ARCHIVE,
+            label="mailfiler/newsletter",
+            confidence=0.85,
+            reason="Newsletter",
+        )
+        processor, _mail, conn = _make_processor(
+            tmp_db_path=tmp_db_path,
+            llm_result=llm,
+        )
+        email = _make_email()
+        processor.reprocess_email(email)
+
+        record = get_processed_email_by_gmail_id(conn, email.gmail_message_id)
+        assert record is None
+        conn.close()
+
+    def test_does_not_execute_actions(self, tmp_db_path: Path) -> None:
+        """reprocess_email never calls apply_action on the mail client."""
+        heuristic = HeuristicResult(
+            score=0.1,
+            action=Action.ARCHIVE,
+            label="mailfiler/newsletter",
+            category=Category.NEWSLETTER,
+            confidence=0.92,
+            applied_rules=["List-Unsubscribe"],
+            is_override=False,
+        )
+        processor, mail_client, conn = _make_processor(
+            tmp_db_path=tmp_db_path,
+            run_mode="full_auto",
+            heuristic_result=heuristic,
+        )
+        email = _make_email()
+        result = processor.reprocess_email(email)
+
+        assert result.executed is False
+        assert len(mail_client.applied_actions) == 0
+        conn.close()
+
+    def test_returns_result_with_executed_false(self, tmp_db_path: Path) -> None:
+        """reprocess_email always returns executed=False."""
+        processor, _mail, conn = _make_processor(
+            tmp_db_path=tmp_db_path,
+            run_mode="full_auto",
+        )
+        email = _make_email()
+        result = processor.reprocess_email(email)
+
+        assert result.executed is False
+        conn.close()
+
+    def test_heuristic_override_used(self, tmp_db_path: Path) -> None:
+        """When heuristics produce an override, reprocess_email uses it."""
+        heuristic = HeuristicResult(
+            score=0.1,
+            action=Action.ARCHIVE,
+            label="mailfiler/politics",
+            category=Category.NEWSLETTER,
+            confidence=0.95,
+            applied_rules=["politics keyword match"],
+            is_override=True,
+        )
+        processor, _mail, conn = _make_processor(
+            tmp_db_path=tmp_db_path,
+            heuristic_result=heuristic,
+        )
+        email = _make_email()
+        result = processor.reprocess_email(email)
+
+        assert result.decision_source == DecisionSource.HEURISTIC
+        assert result.label == "mailfiler/politics"
         conn.close()
