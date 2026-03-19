@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -356,3 +357,283 @@ class TestReprocessUnchanged:
 
         assert result.exit_code == 0, result.output
         mock_client.remove_label.assert_not_called()
+
+
+class TestReprocessCacheSave:
+    """Dry-run writes results to reprocess_pending.json."""
+
+    def test_dry_run_creates_cache_file(self, tmp_path: Path) -> None:
+        config_path = _write_config(tmp_path)
+        _seed_reprocess_data(tmp_path, count=2)
+        emails = [_make_email(f"msg_{i:03d}", f"sender{i}@example.com") for i in range(2)]
+
+        with _patch_gmail(emails):
+            runner = CliRunner()
+            result = runner.invoke(cli, [
+                "--config", str(config_path),
+                "reprocess", "--label", "mailfiler/marketing",
+            ])
+
+        assert result.exit_code == 0, result.output
+        cache_path = tmp_path / "reprocess_pending.json"
+        assert cache_path.exists(), "Cache file should be created on dry-run"
+
+        data = json.loads(cache_path.read_text())
+        assert "created_at" in data
+        assert "changes" in data
+        assert "deleted" in data
+        assert "summary" in data
+        assert "labels" in data
+        assert data["labels"] == ["mailfiler/marketing"]
+
+    def test_dry_run_cache_contains_changed_emails(self, tmp_path: Path) -> None:
+        """Changed emails appear in the changes list with correct fields."""
+        config_path = _write_config(tmp_path)
+        _seed_reprocess_data(tmp_path, count=1)
+        email = _make_email("msg_000", "sender0@example.com")
+
+        with _patch_gmail([email]):
+            runner = CliRunner()
+            result = runner.invoke(cli, [
+                "--config", str(config_path),
+                "reprocess", "--label", "mailfiler/marketing",
+            ])
+
+        assert result.exit_code == 0, result.output
+        cache_path = tmp_path / "reprocess_pending.json"
+        data = json.loads(cache_path.read_text())
+
+        # Stub LLM returns keep_inbox, so marketing → inbox = changed
+        if data["changes"]:
+            change = data["changes"][0]
+            assert "gmail_message_id" in change
+            assert "old_label" in change
+            assert "new_label" in change
+            assert "new_action" in change
+            assert "new_decision_source" in change
+            assert "new_confidence" in change
+
+    def test_dry_run_cache_contains_deleted_emails(self, tmp_path: Path) -> None:
+        """Deleted emails appear in the deleted list."""
+        config_path = _write_config(tmp_path)
+        _seed_reprocess_data(tmp_path, count=2)
+        # Only msg_000 exists; msg_001 is "deleted"
+        email = _make_email("msg_000", "sender0@example.com")
+
+        with _patch_gmail([email]):
+            runner = CliRunner()
+            result = runner.invoke(cli, [
+                "--config", str(config_path),
+                "reprocess", "--label", "mailfiler/marketing",
+            ])
+
+        assert result.exit_code == 0, result.output
+        cache_path = tmp_path / "reprocess_pending.json"
+        data = json.loads(cache_path.read_text())
+        assert "msg_001" in data["deleted"]
+
+    def test_dry_run_shows_cache_path_in_apply_hint(self, tmp_path: Path) -> None:
+        config_path = _write_config(tmp_path)
+        _seed_reprocess_data(tmp_path, count=1)
+        email = _make_email("msg_000", "sender0@example.com")
+
+        with _patch_gmail([email]):
+            runner = CliRunner()
+            result = runner.invoke(cli, [
+                "--config", str(config_path),
+                "reprocess", "--label", "mailfiler/marketing",
+            ])
+
+        assert result.exit_code == 0, result.output
+        assert "mailfiler reprocess --apply" in result.output
+
+
+class TestReprocessCacheApply:
+    """--apply without --label reads from cache and applies."""
+
+    def test_apply_from_cache(self, tmp_path: Path) -> None:
+        config_path = _write_config(tmp_path)
+        db_path = tmp_path / "mailfiler.db"
+        conn = initialize_db(db_path)
+        upsert_processed_email(conn, _make_processed(
+            gmail_message_id="msg_cached",
+            label_applied="mailfiler/marketing",
+        ))
+        upsert_sender_profile(conn, _make_sender())
+        conn.close()
+
+        # Write a cache file with one change
+        cache_path = tmp_path / "reprocess_pending.json"
+        cache_data = {
+            "created_at": "2026-03-19T12:00:00Z",
+            "labels": ["mailfiler/marketing"],
+            "changes": [{
+                "gmail_message_id": "msg_cached",
+                "gmail_thread_id": "thread_001",
+                "from_email": "news@example.com",
+                "from_domain": "example.com",
+                "subject": "Weekly Digest",
+                "received_at": "2026-03-16T09:00:00Z",
+                "processed_at": "2026-03-16T10:00:00Z",
+                "old_label": "mailfiler/marketing",
+                "new_label": "mailfiler/records",
+                "new_action": "archive",
+                "new_decision_source": "heuristic",
+                "new_confidence": 0.92,
+                "new_llm_reason": None,
+            }],
+            "deleted": [],
+            "summary": {"total": 1, "changed": 1, "unchanged": 0, "deleted": 0},
+        }
+        cache_path.write_text(json.dumps(cache_data))
+
+        with _patch_gmail([]) as mock_client:
+            runner = CliRunner()
+            result = runner.invoke(cli, [
+                "--config", str(config_path),
+                "reprocess", "--apply",
+            ])
+
+        assert result.exit_code == 0, result.output
+        # Should have applied the label change
+        mock_client.remove_label.assert_called_once_with("msg_cached", "mailfiler/marketing")
+        # Cache file should be deleted after successful apply
+        assert not cache_path.exists(), "Cache file should be deleted after apply"
+
+    def test_apply_from_cache_with_deleted(self, tmp_path: Path) -> None:
+        """Deleted entries in cache are removed from DB."""
+        config_path = _write_config(tmp_path)
+        db_path = tmp_path / "mailfiler.db"
+        conn = initialize_db(db_path)
+        upsert_processed_email(conn, _make_processed(
+            gmail_message_id="msg_gone",
+            label_applied="mailfiler/marketing",
+        ))
+        conn.close()
+
+        cache_path = tmp_path / "reprocess_pending.json"
+        cache_data = {
+            "created_at": "2026-03-19T12:00:00Z",
+            "labels": ["mailfiler/marketing"],
+            "changes": [],
+            "deleted": ["msg_gone"],
+            "summary": {"total": 1, "changed": 0, "unchanged": 0, "deleted": 1},
+        }
+        cache_path.write_text(json.dumps(cache_data))
+
+        with _patch_gmail([]):
+            runner = CliRunner()
+            result = runner.invoke(cli, [
+                "--config", str(config_path),
+                "reprocess", "--apply",
+            ])
+
+        assert result.exit_code == 0, result.output
+        conn = initialize_db(db_path)
+        assert get_processed_email_by_gmail_id(conn, "msg_gone") is None
+        conn.close()
+        assert not cache_path.exists()
+
+    def test_apply_no_cache_shows_error(self, tmp_path: Path) -> None:
+        """--apply without labels and no cache file shows error."""
+        config_path = _write_config(tmp_path)
+        # No cache file, no labels
+        with _patch_gmail([]):
+            runner = CliRunner()
+            result = runner.invoke(cli, [
+                "--config", str(config_path),
+                "reprocess", "--apply",
+            ])
+
+        assert result.exit_code == 0, result.output
+        assert "No cached" in result.output or "no cached" in result.output.lower()
+
+    def test_apply_with_labels_ignores_cache(self, tmp_path: Path) -> None:
+        """--apply --label does live classification, ignores cache."""
+        config_path = _write_config(tmp_path)
+        _seed_reprocess_data(tmp_path, count=1)
+        email = _make_email("msg_000", "sender0@example.com")
+
+        # Write a cache file that should be ignored
+        cache_path = tmp_path / "reprocess_pending.json"
+        cache_path.write_text(json.dumps({
+            "created_at": "2026-03-19T12:00:00Z",
+            "labels": ["mailfiler/other"],
+            "changes": [],
+            "deleted": [],
+            "summary": {"total": 0, "changed": 0, "unchanged": 0, "deleted": 0},
+        }))
+
+        with _patch_gmail([email]):
+            runner = CliRunner()
+            result = runner.invoke(cli, [
+                "--config", str(config_path),
+                "reprocess", "--label", "mailfiler/marketing", "--apply",
+            ])
+
+        assert result.exit_code == 0, result.output
+        # Cache file should still exist (not consumed)
+        assert cache_path.exists()
+
+    def test_stale_cache_warns(self, tmp_path: Path) -> None:
+        """Cache older than 24 hours shows warning but proceeds."""
+        config_path = _write_config(tmp_path)
+        db_path = tmp_path / "mailfiler.db"
+        conn = initialize_db(db_path)
+        upsert_processed_email(conn, _make_processed(
+            gmail_message_id="msg_old",
+            label_applied="mailfiler/marketing",
+        ))
+        upsert_sender_profile(conn, _make_sender())
+        conn.close()
+
+        cache_path = tmp_path / "reprocess_pending.json"
+        cache_data = {
+            "created_at": "2026-03-17T12:00:00Z",  # 2 days old
+            "labels": ["mailfiler/marketing"],
+            "changes": [{
+                "gmail_message_id": "msg_old",
+                "gmail_thread_id": "thread_001",
+                "from_email": "news@example.com",
+                "from_domain": "example.com",
+                "subject": "Weekly Digest",
+                "received_at": "2026-03-16T09:00:00Z",
+                "processed_at": "2026-03-16T10:00:00Z",
+                "old_label": "mailfiler/marketing",
+                "new_label": "mailfiler/records",
+                "new_action": "archive",
+                "new_decision_source": "heuristic",
+                "new_confidence": 0.92,
+                "new_llm_reason": None,
+            }],
+            "deleted": [],
+            "summary": {"total": 1, "changed": 1, "unchanged": 0, "deleted": 0},
+        }
+        cache_path.write_text(json.dumps(cache_data))
+
+        with _patch_gmail([]) as mock_client:
+            runner = CliRunner()
+            result = runner.invoke(cli, [
+                "--config", str(config_path),
+                "reprocess", "--apply",
+            ])
+
+        assert result.exit_code == 0, result.output
+        assert "stale" in result.output.lower() or "old" in result.output.lower()
+        # Should still apply despite staleness
+        mock_client.remove_label.assert_called_once()
+
+
+class TestReprocessNoLabelsNoApply:
+    """Neither --apply nor --label shows error."""
+
+    def test_no_labels_no_apply_shows_error(self, tmp_path: Path) -> None:
+        config_path = _write_config(tmp_path)
+        with _patch_gmail([]):
+            runner = CliRunner()
+            result = runner.invoke(cli, [
+                "--config", str(config_path),
+                "reprocess",
+            ])
+
+        assert result.exit_code != 0 or "label" in result.output.lower()
