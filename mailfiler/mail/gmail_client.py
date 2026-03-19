@@ -143,14 +143,16 @@ class GmailMailClient:
         return _parse_message(raw)
 
     def fetch_messages(self, message_ids: list[str]) -> dict[str, EmailMessage]:
-        """Fetch multiple messages in a single batch API call.
+        """Fetch multiple messages via the Gmail batch API.
 
         Returns a dict mapping message_id → EmailMessage for messages
         that were found. Missing/deleted messages are silently excluded.
+        Gmail limits batch requests to 100, so larger lists are chunked.
         """
         if not message_ids:
             return {}
 
+        _BATCH_LIMIT = 100
         results: dict[str, EmailMessage] = {}
 
         def _callback(request_id: str, response: dict, exception: Exception | None) -> None:
@@ -159,13 +161,15 @@ class GmailMailClient:
                 return
             results[request_id] = _parse_message(response)
 
-        batch = self._service.new_batch_http_request()
-        for mid in message_ids:
-            request = self._service.users().messages().get(
-                userId="me", id=mid, format="full"
-            )
-            batch.add(request, callback=_callback, request_id=mid)
-        batch.execute()
+        for offset in range(0, len(message_ids), _BATCH_LIMIT):
+            chunk = message_ids[offset : offset + _BATCH_LIMIT]
+            batch = self._service.new_batch_http_request()
+            for mid in chunk:
+                request = self._service.users().messages().get(
+                    userId="me", id=mid, format="full"
+                )
+                batch.add(request, callback=_callback, request_id=mid)
+            batch.execute()
 
         return results
 
