@@ -350,11 +350,16 @@ def reprocess(ctx: click.Context, label: tuple[str, ...], apply_changes: bool, l
             console.print(f"[dim]No emails found under {lbl}[/]")
             continue
 
+        console.print(
+            f"[bold]{lbl}[/]: {len(records)} emails — fetching from Gmail...",
+            end="",
+        )
         gmail_ids = [r["gmail_message_id"] for r in records]
-        with console.status(
-            f"[bold]Fetching {len(gmail_ids)} emails from Gmail..."
-        ):
-            fetched = mail_client.fetch_messages(gmail_ids)
+        fetched = mail_client.fetch_messages(gmail_ids)
+        console.print(
+            f" [green]{len(fetched)}[/] found, "
+            f"[red]{len(records) - len(fetched)}[/] deleted"
+        )
 
         for record in records:
             total += 1
